@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.gitignore
+data
+backups
+test-results
+playwright-report
+coverage
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
