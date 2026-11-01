@@ -13,7 +13,7 @@ import { getProjectAccess, requireProjectAccess, type ProjectAccess } from "@/li
 import { getPendingCount } from "@/lib/schedule";
 import { recordAnomaly, recordAssignmentHistory, type EntityRef } from "@/lib/history";
 import { sendNotifications } from "@/lib/notifications";
-import { nowIso } from "@/lib/time";
+import { localDateBounds, nowIso } from "@/lib/time";
 import {
   loadBarcodeIssueContexts,
   loadIssueContexts,
@@ -41,6 +41,7 @@ export interface ProjectStatus {
   requires_reason: number;
   is_identified: number;
   is_default: number;
+  is_closed: number;
   sort_order: number;
 }
 
@@ -83,6 +84,12 @@ export interface BarcodeListFilters {
   statusId?: string;
   categoryId?: string;
   priority?: string;
+  /** 录入起始日期（本地 YYYY-MM-DD，含当天）。 */
+  entryFrom?: string;
+  /** 录入结束日期（本地 YYYY-MM-DD，含当天）。 */
+  entryTo?: string;
+  /** 仅显示仍有未闭环问题项的条码。 */
+  openOnly?: boolean;
 }
 
 export interface ListGroupView {
@@ -94,6 +101,10 @@ export interface ListGroupView {
 export interface BarcodeListRow extends BarcodeRow {
   statuses: { id: string; name: string; color: string; is_identified: number }[];
   groups: ListGroupView[];
+  entry_count: number;
+  matched_entry_count: number;
+  last_entry_at: string | null;
+  is_closed: boolean;
   permissions: {
     canUpdateAllStatuses: boolean;
     canTransferAll: boolean;
@@ -149,12 +160,18 @@ export interface CreateBarcodeInput {
   priority: string;
   remark?: string;
   deviceIp?: string | null;
+  /** 本次录入的报错测试项（可选）。 */
+  errorItem?: string;
+  /** 条码已存在时，是否作为再次录入追加到历史。 */
+  append?: boolean;
 }
 
 export interface CreateBarcodeResult {
   barcodeId: string;
   issueId: string;
   recipientIds: string[];
+  appended?: boolean;
+  entryIndex?: number;
 }
 
 interface ResolvedEntryGroup {
@@ -229,8 +246,25 @@ export function createBarcode(
   const categoryId = assertCategory(projectId, input.categoryId);
   const selectedGroups = assertGroupSelection(projectId, input.groupIds || []);
   const status = getDefaultStatus(projectId);
-  const existing = db.prepare("SELECT id FROM barcodes WHERE project_id = ? AND barcode = ?").get(projectId, barcode);
-  if (existing) throw new AppError(409, `条码「${barcode}」已在本项目录入，请从问题列表打开`);
+  const errorItem = (input.errorItem || "").trim();
+  if (errorItem.length > 500) throw new AppError(400, "报错测试项不能超过 500 个字符");
+  const existing = db.prepare("SELECT id FROM barcodes WHERE project_id = ? AND barcode = ?").get(projectId, barcode) as
+    | { id: string }
+    | undefined;
+  if (existing) {
+    if (!input.append) {
+      throw new AppError(409, `条码「${barcode}」已于此前录入。如为复测后再次出现的问题，可追加一条新的录入记录。`, {
+        barcodeId: existing.id,
+        requiresAppend: true,
+      });
+    }
+    return appendBarcodeEntry(projectId, userId, existing.id, {
+      errorItem,
+      groupIds: input.groupIds || [],
+      notify: options.notify,
+      now,
+    });
+  }
 
   const host = db
     .prepare("SELECT host_ip, host_account, host_password FROM location_hosts WHERE project_id = ? AND location_no = ?")
@@ -264,8 +298,8 @@ export function createBarcode(
     );
     db.prepare(
       `INSERT INTO issues (id, barcode_id, project_id, error_item, status_id, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, '', ?, ?, ?, ?)`,
-    ).run(issueId, barcodeId, projectId, status.id, userId, timestamp, timestamp);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(issueId, barcodeId, projectId, errorItem, status.id, userId, timestamp, timestamp);
 
     const resolved: ResolvedEntryGroup[] = selectedGroups.map((group) => ({
       groupId: group.id,
@@ -334,6 +368,100 @@ export function createBarcode(
     });
   }
   return { barcodeId, issueId, recipientIds: recipients };
+}
+
+/**
+ * 复测/重复出现时对已存在条码追加一次新的录入记录。
+ * 每次录入生成独立 issue（各自的录入时间与报错测试项），便于按时间区分错误。
+ */
+export function appendBarcodeEntry(
+  projectId: string,
+  userId: string,
+  barcodeId: string,
+  input: { errorItem?: string; groupIds?: string[]; notify?: boolean; now?: Date },
+): CreateBarcodeResult {
+  requireProjectAccess(userId, projectId);
+  const db = getDb();
+  const barcode = getBarcodeBase(projectId, barcodeId);
+  if (!barcode) throw new AppError(404, "条码不存在");
+  const now = input.now || new Date();
+  const timestamp = now.toISOString();
+  const moment = momentForNow(now);
+  const selectedGroups = assertGroupSelection(projectId, input.groupIds || []);
+  const status = getDefaultStatus(projectId);
+  const errorItem = (input.errorItem || "").trim();
+  if (errorItem.length > 500) throw new AppError(400, "报错测试项不能超过 500 个字符");
+  const issueId = newId("iss");
+  const recipientIds: string[] = [];
+
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO issues (id, barcode_id, project_id, error_item, status_id, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(issueId, barcodeId, projectId, errorItem, status.id, userId, timestamp, timestamp);
+
+    const resolved: ResolvedEntryGroup[] = selectedGroups.map((group) => ({
+      groupId: group.id,
+      groupName: group.name,
+      resolution: resolveGroupAt(group.id, moment),
+    }));
+    const toHandlerMap = new Map<string, BasicUser>();
+    const anomalies: string[] = [];
+    for (const entry of resolved) {
+      db.prepare(
+        "INSERT INTO issue_groups (id, issue_id, group_id, pinned_user_id, created_at) VALUES (?, ?, ?, NULL, ?)",
+      ).run(newId("igr"), issueId, entry.groupId, timestamp);
+      const issueGroup = db.prepare("SELECT id FROM issue_groups WHERE issue_id = ? AND group_id = ?").get(issueId, entry.groupId) as { id: string };
+      setIssueGroupHandlers(db, issueGroup.id, entry.resolution.handlerIds, timestamp, null);
+      for (const handler of entry.resolution.handlers) toHandlerMap.set(handler.id, handler);
+      recipientIds.push(...entry.resolution.handlerIds);
+      if (entry.resolution.source === "FALLBACK") {
+        const message = `责任组「${entry.groupName}」${entry.resolution.fallbackReason || "排班缺失"}，已兜底分配并通知`;
+        anomalies.push(message);
+        recordAnomaly({ projectId, issueId, groupId: entry.groupId, kind: "SCHEDULE_MISSING", message, createdAt: timestamp });
+      }
+    }
+    const toGroups: EntityRef[] = resolved.map((entry) => ({ id: entry.groupId, name: entry.groupName }));
+    const toHandlers: EntityRef[] = [...toHandlerMap.values()].map((user) => ({ id: user.id, name: user.name }));
+    recordAssignmentHistory({
+      issueId,
+      changeType: "ENTRY",
+      operatorId: userId,
+      fromGroups: [],
+      toGroups,
+      fromHandlers: [],
+      toHandlers,
+      reasonHtml: "复测/再次录入，按当前班次排班分配责任组处理人",
+      meta: {
+        groupNames: selectedGroups.map((group) => group.name),
+        anomalies,
+        reEntry: true,
+        fromGroupNames: [],
+        toGroupNames: toGroups.map((item) => item.name),
+        retainedGroupNames: [],
+        fromHandlerNames: [],
+        toHandlerNames: toHandlers.map((item) => item.name),
+      },
+      createdAt: timestamp,
+    });
+    db.prepare("UPDATE barcodes SET updated_at = ? WHERE id = ?").run(timestamp, barcodeId);
+  })();
+
+  const entryIndex = (
+    db.prepare("SELECT COUNT(*) AS count FROM issues WHERE barcode_id = ?").get(barcodeId) as { count: number }
+  ).count;
+  const recipients = [...new Set(recipientIds)];
+  if (input.notify !== false) {
+    const operator = db.prepare("SELECT name FROM users WHERE id = ?").get(userId) as { name: string };
+    sendNotifications({
+      projectId,
+      recipientIds: recipients,
+      title: "条码再次录入",
+      body: `条码「${barcode.barcode}」第 ${entryIndex} 次录入（复测/再次出现），已分配给你处理，录入人：${operator.name}。`,
+      barcodeIds: [barcodeId],
+    });
+  }
+  return { barcodeId, issueId, recipientIds: recipients, appended: true, entryIndex };
 }
 
 export function addErrorIssue(
@@ -837,6 +965,33 @@ export function listBarcodes(
     conditions.push("b.priority = ?");
     params.push(filters.priority);
   }
+  // 按「问题录入时间」筛选：条码只要有一次录入落在区间内即命中。
+  let entryFromIso: string | null = null;
+  let entryToIso: string | null = null;
+  try {
+    if (filters.entryFrom) entryFromIso = localDateBounds(filters.entryFrom).start;
+    if (filters.entryTo) entryToIso = localDateBounds(filters.entryTo).endExclusive;
+  } catch {
+    entryFromIso = null;
+    entryToIso = null;
+  }
+  if (entryFromIso || entryToIso) {
+    const parts: string[] = [];
+    if (entryFromIso) {
+      parts.push("ie.created_at >= ?");
+      params.push(entryFromIso);
+    }
+    if (entryToIso) {
+      parts.push("ie.created_at < ?");
+      params.push(entryToIso);
+    }
+    conditions.push(`EXISTS (SELECT 1 FROM issues ie WHERE ie.barcode_id = b.id AND ${parts.join(" AND ")})`);
+  }
+  if (filters.openOnly) {
+    conditions.push(
+      "EXISTS (SELECT 1 FROM issues io JOIN statuses so ON so.id = io.status_id WHERE io.barcode_id = b.id AND so.is_closed = 0)",
+    );
+  }
   const where = conditions.join(" AND ");
   const total = (db.prepare(`SELECT COUNT(*) AS count FROM barcodes b WHERE ${where}`).get(...params) as { count: number }).count;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
@@ -846,12 +1001,17 @@ export function listBarcodes(
   const rows = db
     .prepare(
       `SELECT b.*, c.name AS category_name, c.color AS category_color, u.name AS creator_name,
-              (SELECT COUNT(*) FROM issues i WHERE i.barcode_id = b.id) AS issue_count
+              (SELECT COUNT(*) FROM issues i WHERE i.barcode_id = b.id) AS issue_count,
+              (SELECT MAX(i.created_at) FROM issues i WHERE i.barcode_id = b.id) AS last_entry_at,
+              (NOT EXISTS (
+                 SELECT 1 FROM issues io JOIN statuses so ON so.id = io.status_id
+                 WHERE io.barcode_id = b.id AND so.is_closed = 0
+               )) AS is_closed
        FROM barcodes b
        LEFT JOIN categories c ON c.id = b.category_id
        JOIN users u ON u.id = b.created_by
        WHERE ${where}
-       ORDER BY b.updated_at DESC, b.id DESC
+       ORDER BY COALESCE((SELECT MAX(i.created_at) FROM issues i WHERE i.barcode_id = b.id), b.created_at) DESC, b.id DESC
        LIMIT ? OFFSET ?`,
     )
     .all(...params, pageSize, offset) as (Record<string, unknown> & BarcodeRow)[];
@@ -863,7 +1023,8 @@ export function listBarcodes(
   const placeholders = barcodeIds.map(() => "?").join(",");
   const issueRows = db
     .prepare(
-      `SELECT i.id, i.barcode_id, i.status_id, s.name AS status_name, s.color AS status_color, s.is_identified
+      `SELECT i.id, i.barcode_id, i.status_id, i.created_at, s.name AS status_name, s.color AS status_color,
+              s.is_identified, s.is_closed
        FROM issues i JOIN statuses s ON s.id = i.status_id
        WHERE i.barcode_id IN (${placeholders})
        ORDER BY i.created_at`,
@@ -872,9 +1033,11 @@ export function listBarcodes(
     id: string;
     barcode_id: string;
     status_id: string;
+    created_at: string;
     status_name: string;
     status_color: string;
     is_identified: number;
+    is_closed: number;
   }[];
   const groupRows = db
     .prepare(
@@ -931,15 +1094,32 @@ export function listBarcodes(
     }
   }
 
+  const entryStats = new Map<string, { count: number; matched: number; last: string | null; open: boolean }>();
+  const hasRange = Boolean(entryFromIso || entryToIso);
+  for (const issue of issueRows) {
+    const stat = entryStats.get(issue.barcode_id) || { count: 0, matched: 0, last: null, open: false };
+    stat.count += 1;
+    if (!stat.last || issue.created_at > stat.last) stat.last = issue.created_at;
+    if (issue.is_closed === 0) stat.open = true;
+    const inRange = (!entryFromIso || issue.created_at >= entryFromIso) && (!entryToIso || issue.created_at < entryToIso);
+    if (inRange) stat.matched += 1;
+    entryStats.set(issue.barcode_id, stat);
+  }
+
   const output = rows.map((row) => {
     const barcodeIssues = issueRows.filter((issue) => issue.barcode_id === row.id);
     const contextsForBarcode = barcodeIssues
       .map((issue) => contexts.get(issue.id))
       .filter((context): context is IssueContext => Boolean(context));
     const permissions = permissionsForBarcode(contextsForBarcode, access, userId);
+    const stat = entryStats.get(row.id);
     return {
       ...row,
       priority_label: PRIORITY_LABELS[row.priority as Priority] || row.priority,
+      entry_count: stat?.count ?? 0,
+      matched_entry_count: hasRange ? stat?.matched ?? 0 : stat?.count ?? 0,
+      last_entry_at: stat?.last ?? null,
+      is_closed: !(stat?.open ?? false),
       statuses: [...(statusesByBarcode.get(row.id)?.values() || [])],
       groups: [...(groupsByBarcode.get(row.id)?.values() || [])].map((group) => ({
         id: group.id,

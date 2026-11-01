@@ -43,6 +43,8 @@ export const createIssueSchema = z.object({
   priority: z.enum(["HIGH", "MEDIUM", "LOW"]).optional().default("MEDIUM"),
   remark: z.string().trim().max(1000, "备注最多 1000 字").optional().default(""),
   deviceIp: z.string().trim().max(100).nullable().optional(),
+  errorItem: z.string().trim().max(500, "报错测试项过长").optional().default(""),
+  append: z.boolean().optional().default(false),
 });
 
 export const errorItemSchema = z.object({

@@ -2,6 +2,42 @@
 
 按时间倒序记录每次功能修改的变更点、影响文件与验证结论。`docs/VERIFICATION.md` 保留需求与功能的完整映射。
 
+## 2026-11-02 问题跟踪：录入时间筛选、同一条码多次录入与默认未闭环视图
+
+**需求**：问题跟踪需要按录入时间或时间段筛选；同一个条码在复测后可能再次出现错误并再次录入，希望能按条码查看历史错误变化、区分不同录入时间；列表默认只显示当天未闭环的条码，避免历史数据过多导致页面卡顿；按时间查询时必须能查出重复录入的记录。
+
+**变更点**
+
+1. 状态新增「闭环」标记：`statuses.is_closed`；默认状态新增「已闭环」，旧项目在启动时自动补齐（项目配置中可新增/切换闭环状态）。
+2. 条码列表默认视图改为「今天录入 + 未闭环」：新增录入日期起止筛选、「今天」「仅未闭环」「显示全部历史」；列表按最近录入时间倒序。
+3. 列表新增「录入时间」列：显示最近录入时间、录入次数；日期筛选命中时显示「范围内 N 次」；全部问题项闭环的条码显示「已闭环」标记。
+4. 同一条码支持再次录入：`createBarcode` 增加 `append` 参数；重复条码未声明追加时返回 409（`details.requiresAppend`），录入弹窗确认后追加为新的录入记录（独立 `issues` 行、独立录入时间、报错测试项、排班解析与通知）。
+5. 条码详情新增「录入历史」摘要（第 N 次 · 时间 · 当前状态）与每条录入的「第 N 次录入 · 时间 · 录入人」，状态历史与责任路径按每次录入分别展示。
+6. 录入时间筛选在问题项级别生效：任一次录入落在区间内即命中该条码；重复录入的条码在任一次录入日期都能查到，并显示命中次数。
+7. 性能：新增 `issues(barcode_id, created_at)` 与 `statuses(project_id, is_closed)` 索引；默认过滤在 SQL 层完成。
+8. 演示数据：`XH-CPU-2601001` 追加一次「复测再次出现」录入；新增 UI 校验脚本 `scripts/ui-issues-history.mjs`（`pnpm test:ui:issues`）。
+
+**影响文件**
+
+| 文件 | 说明 |
+|---|---|
+| `lib/db.ts`、`lib/projects.ts`、`lib/taxonomy.ts` | 闭环状态、默认状态与索引 |
+| `lib/issues.ts` | 追加录入、录入时间筛选、列表聚合与排序 |
+| `lib/api-schemas.ts`、`app/api/projects/[projectId]/issues/route.ts`、`app/api/projects/[projectId]/statuses/**` | append/errorItem 参数与闭环字段 |
+| `components/issues/EntryModal.tsx`、`IssuesWorkspace.tsx`、`IssueDetail.tsx` | 重复录入确认、时间筛选栏、录入历史展示 |
+| `components/settings/ProjectSettingsClient.tsx` | 状态闭环配置 |
+| `scripts/seed.ts`、`scripts/ui-issues-history.mjs`、`tests/issues-history.test.ts` | 演示数据与校验 |
+| `README.md`、`package.json` | 说明与 `test:ui:issues` |
+
+**验证**
+
+- `pnpm typecheck`：通过
+- `pnpm test`：**48/48** 通过（新增 `tests/issues-history.test.ts` 7 项：重复录入、追加通知与责任历史、录入日期筛选、重复条码匹配次数、仅未闭环、排序、闭环状态）
+- `pnpm build`：编译成功
+- `node scripts/ui-issues-history.mjs`：5/5 项通过（默认今天+未闭环、录入时间列与次数、详情录入历史、空日期结果、显示全部历史）
+- `node scripts/ui-issues-tabs.mjs`：12/12 通过（问题跟踪页回归）
+- `node scripts/ui-packages.mjs`、`node scripts/e2e-packages.mjs`：软件包页面与 API 回归通过
+
 ## 2026-11-02 转验证改为逐包处理、电子流程链接、节点说明与测试版本展示
 
 **需求**：转测试按批次、转验证逐包单独处理（没有批次）；软件经理处理每个转验证包时必须填写电子流程链接，便于跟踪（转正时同样保留）；已给出测试结论的软件包在总览不再显示测试版本；软件包新增「说明」列表示所用项目和节点；问题跟踪里的「问题分类」实际含义是节点，改名「问题归属节点」，并能从节点反查该节点使用的软件包。

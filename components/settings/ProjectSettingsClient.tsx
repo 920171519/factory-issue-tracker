@@ -287,34 +287,36 @@ function StatusSection({ projectId, statuses, isPm, busy, run }: {
   const [requiresReason, setRequiresReason] = useState(false);
   const [isIdentified, setIsIdentified] = useState(false);
   const [isDefault, setIsDefault] = useState(false);
+  const [isClosed, setIsClosed] = useState(false);
 
   async function add(event: React.FormEvent) {
     event.preventDefault();
     await run("add-status", async () => {
       await apiFetch(`/api/projects/${projectId}/statuses`, {
         method: "POST",
-        body: JSON.stringify({ name, color, countsPending, requiresReason, isIdentified, isDefault }),
+        body: JSON.stringify({ name, color, countsPending, requiresReason, isIdentified, isDefault, isClosed }),
       });
       setName("");
       setCountsPending(true);
       setRequiresReason(false);
       setIsIdentified(false);
       setIsDefault(false);
+      setIsClosed(false);
       toast.success("问题状态已新增；新增状态无需配置责任人");
     });
   }
 
   return (
     <div className="stack-sm">
-      <div className="callout-strip">状态仅代表业务进展，状态间不设流转限制。已定位、非问题、挂起默认不计入待处理数；状态变化不会改变参与责任组和责任人。</div>
+      <div className="callout-strip">状态仅代表业务进展，状态间不设流转限制。已定位、非问题、挂起默认不计入待处理数；标记为「闭环」的状态表示该问题项已闭环，问题跟踪默认只显示当天仍有未闭环问题项的条码。</div>
       <div className="card">
         <div className="card-header"><div><h2 className="section-title">问题状态</h2><div className="section-sub">系统默认提供的状态可在项目内维护；建议保留默认状态「定位中」。</div></div></div>
         <div className="table-wrap">
           <table className="table config-table">
-            <thead><tr><th>名称</th><th>颜色</th><th>计入待处理</th><th>需填原因</th><th>已定位</th><th>默认状态</th><th>问题数</th><th></th></tr></thead>
+            <thead><tr><th>名称</th><th>颜色</th><th>计入待处理</th><th>需填原因</th><th>已定位</th><th>闭环</th><th>默认状态</th><th>问题数</th><th></th></tr></thead>
             <tbody>
               {statuses.map((status) => (
-                <StatusRow key={`${status.id}-${status.name}-${status.color}-${status.countsPending}-${status.requiresReason}-${status.isIdentified}-${status.isDefault}`} projectId={projectId} status={status} isPm={isPm} busy={busy} run={run} />
+                <StatusRow key={`${status.id}-${status.name}-${status.color}-${status.countsPending}-${status.requiresReason}-${status.isIdentified}-${status.isClosed}-${status.isDefault}`} projectId={projectId} status={status} isPm={isPm} busy={busy} run={run} />
               ))}
             </tbody>
           </table>
@@ -329,6 +331,7 @@ function StatusSection({ projectId, statuses, isPm, busy, run }: {
             <label className="checkbox-line"><input type="checkbox" checked={countsPending} onChange={(event) => setCountsPending(event.target.checked)} /> 计入待处理</label>
             <label className="checkbox-line"><input type="checkbox" checked={requiresReason} onChange={(event) => setRequiresReason(event.target.checked)} /> 必须填写原因</label>
             <label className="checkbox-line"><input type="checkbox" checked={isIdentified} onChange={(event) => setIsIdentified(event.target.checked)} /> 标记已定位</label>
+            <label className="checkbox-line"><input type="checkbox" checked={isClosed} onChange={(event) => setIsClosed(event.target.checked)} /> 闭环</label>
             <label className="checkbox-line"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} /> 设为默认</label>
             <button className="btn btn-secondary" type="submit" disabled={busy !== null}><Plus size={14} /> 新增状态</button>
           </div>
@@ -349,6 +352,7 @@ function StatusRow({ projectId, status, isPm, busy, run }: {
   const [countsPending, setCountsPending] = useState(status.countsPending);
   const [requiresReason, setRequiresReason] = useState(status.requiresReason);
   const [isIdentified, setIsIdentified] = useState(status.isIdentified);
+  const [isClosed, setIsClosed] = useState(status.isClosed);
   const [isDefault, setIsDefault] = useState(status.isDefault);
   return (
     <tr>
@@ -357,6 +361,7 @@ function StatusRow({ projectId, status, isPm, busy, run }: {
       <td><input type="checkbox" checked={countsPending} onChange={(event) => setCountsPending(event.target.checked)} disabled={!isPm} /></td>
       <td><input type="checkbox" checked={requiresReason} onChange={(event) => setRequiresReason(event.target.checked)} disabled={!isPm} /></td>
       <td><input type="checkbox" checked={isIdentified} onChange={(event) => setIsIdentified(event.target.checked)} disabled={!isPm} /></td>
+      <td><input type="checkbox" checked={isClosed} onChange={(event) => setIsClosed(event.target.checked)} disabled={!isPm} title="闭环状态表示问题项已处理完毕，默认列表不再显示" /></td>
       <td><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} disabled={!isPm || status.isDefault} title={status.isDefault ? "当前默认状态；如需更换，请将其他状态设为默认" : ""} /></td>
       <td className="mono">{status.issueCount}</td>
       <td className="actions">
@@ -364,7 +369,7 @@ function StatusRow({ projectId, status, isPm, busy, run }: {
           <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => void run(`save-status-${status.id}`, async () => {
             await apiFetch(`/api/projects/${projectId}/statuses/${status.id}`, {
               method: "PATCH",
-              body: JSON.stringify({ name, color, countsPending, requiresReason, isIdentified, isDefault }),
+              body: JSON.stringify({ name, color, countsPending, requiresReason, isIdentified, isDefault, isClosed }),
             });
             toast.success("状态已保存");
           })}><Check size={12} /> 保存</button>

@@ -10,6 +10,7 @@ const schema = z.object({
   requiresReason: z.boolean().optional(),
   isIdentified: z.boolean().optional(),
   isDefault: z.boolean().optional(),
+  isClosed: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
 });
 

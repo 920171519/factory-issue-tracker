@@ -14,7 +14,15 @@ import { getProjectIssueCount, getMyPendingInProject } from "@/lib/issues";
 import { pendingDeletionCount } from "@/lib/deletion";
 import { syncGroupHandoffKey } from "@/lib/schedule";
 
-export const DEFAULT_STATUSES = [
+export const DEFAULT_STATUSES: {
+  name: string;
+  color: string;
+  countsPending: number;
+  requiresReason: number;
+  isIdentified: number;
+  isDefault: number;
+  isClosed?: number;
+}[] = [
   { name: "定位中", color: "#2563eb", countsPending: 1, requiresReason: 0, isIdentified: 0, isDefault: 1 },
   { name: "已定位", color: "#16a34a", countsPending: 0, requiresReason: 1, isIdentified: 1, isDefault: 0 },
   { name: "非问题", color: "#64748b", countsPending: 0, requiresReason: 1, isIdentified: 0, isDefault: 0 },
@@ -25,6 +33,7 @@ export const DEFAULT_STATUSES = [
   { name: "等待复测", color: "#0891b2", countsPending: 1, requiresReason: 0, isIdentified: 1, isDefault: 0 },
   { name: "复测中", color: "#0284c7", countsPending: 1, requiresReason: 0, isIdentified: 1, isDefault: 0 },
   { name: "隔离中", color: "#b91c1c", countsPending: 1, requiresReason: 0, isIdentified: 0, isDefault: 0 },
+  { name: "已闭环", color: "#0f766e", countsPending: 0, requiresReason: 0, isIdentified: 0, isDefault: 0, isClosed: 1 },
 ];
 
 export const DEFAULT_TIME_SLOTS = [
@@ -83,8 +92,8 @@ export function createProject(
     ).run(projectId, userId, now);
     const statusInsert = db.prepare(
       `INSERT INTO statuses
-        (id, project_id, name, color, counts_pending, requires_reason, is_identified, is_default, sort_order, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, name, color, counts_pending, requires_reason, is_identified, is_default, is_closed, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     DEFAULT_STATUSES.forEach((status, index) => {
       statusInsert.run(
@@ -96,6 +105,7 @@ export function createProject(
         status.requiresReason,
         status.isIdentified,
         status.isDefault,
+        status.isClosed ? 1 : 0,
         index,
         now,
       );

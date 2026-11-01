@@ -17,6 +17,9 @@ export async function GET(request: NextRequest, context: { params: Promise<{ pro
       statusId: params.get("statusId") || "",
       categoryId: params.get("categoryId") || "",
       priority: params.get("priority") || "",
+      entryFrom: params.get("entryFrom") || "",
+      entryTo: params.get("entryTo") || "",
+      openOnly: params.get("openOnly") === "1",
     });
     return json(result);
   } catch (error) {
@@ -31,7 +34,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pr
     requireProjectAccess(user.id, projectId);
     const input = await readJson(request, createIssueSchema);
     const result = createBarcode(projectId, user.id, input);
-    return json({ barcodeId: result.barcodeId, issueId: result.issueId }, 201);
+    return json(
+      { barcodeId: result.barcodeId, issueId: result.issueId, appended: result.appended ?? false, entryIndex: result.entryIndex },
+      201,
+    );
   } catch (error) {
     return apiError(error);
   }

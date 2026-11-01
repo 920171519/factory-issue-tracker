@@ -133,7 +133,7 @@ try {
   assert.equal(await listTab.getAttribute("aria-selected"), "false");
   listRequests.length = 0;
   const searchResponse = page.waitForResponse((response) => /\/api\/projects\/[^/]+\/issues\?/.test(response.url()) && response.status() === 200);
-  await page.locator(".issues-toolbar-card input.input").fill(firstBarcode);
+  await page.locator(".issues-toolbar-card .search-field input").fill(firstBarcode);
   await page.locator(".issues-toolbar-card").getByRole("button", { name: "搜索" }).click();
   await searchResponse;
   await page.waitForTimeout(600);
@@ -151,7 +151,7 @@ try {
   await resetResponse;
   await page.waitForTimeout(600);
   assert.equal(await listTab.getAttribute("aria-selected"), "true");
-  assert.equal(await page.locator(".issues-toolbar-card input.input").inputValue(), "", "清除后搜索框应为空");
+  assert.equal(await page.locator(".issues-toolbar-card .search-field input").inputValue(), "", "清除后搜索框应为空");
   pass("清除筛选恢复全部条码并停留在第一个标签页");
 
   // 9. 每页数量变化同样回到第一个标签页

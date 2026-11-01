@@ -405,6 +405,12 @@ ul, ol { margin: 0; }
 .issue-toolbar { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .issue-toolbar .field { min-width: 130px; }
 .issue-toolbar .search-field { flex: 1; min-width: 220px; }
+/* 录入时间筛选栏（默认只显示当天未闭环） */
+.issue-timebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 2px 0; border-top: 1px dashed var(--border); }
+.issue-timebar .input { min-height: 30px; padding: 3px 8px; font-size: 11.5px; width: auto; }
+.issue-timebar .hint { font-size: 10.5px; }
+.issue-timebar .checkbox-line { font-size: 11px; }
+.entry-history { border: 1px dashed var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--surface-soft); }
 /* 标签页上方的统一工具区：录入/导入/模板 + 搜索 + 筛选 */
 .issues-toolbar-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
 .issues-toolbar-card .issue-list-actions { padding: 0; }

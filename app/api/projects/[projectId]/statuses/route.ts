@@ -11,6 +11,7 @@ const schema = z.object({
   requiresReason: z.boolean().optional(),
   isIdentified: z.boolean().optional(),
   isDefault: z.boolean().optional(),
+  isClosed: z.boolean().optional(),
 });
 
 export async function GET(request: NextRequest, context: { params: Promise<{ projectId: string }> }) {

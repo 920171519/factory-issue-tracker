@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS statuses (
   requires_reason INTEGER NOT NULL DEFAULT 0,
   is_identified INTEGER NOT NULL DEFAULT 0,
   is_default INTEGER NOT NULL DEFAULT 0,
+  is_closed INTEGER NOT NULL DEFAULT 0,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   UNIQUE (project_id, name)
@@ -393,6 +395,7 @@ CREATE INDEX IF NOT EXISTS ix_package_verifications_package
 
 CREATE INDEX IF NOT EXISTS ix_barcodes_project_updated ON barcodes(project_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS ix_issues_barcode ON issues(barcode_id);
+CREATE INDEX IF NOT EXISTS ix_issues_barcode_created ON issues(barcode_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_issues_project_status ON issues(project_id, status_id);
 CREATE INDEX IF NOT EXISTS ix_issue_groups_group ON issue_groups(group_id);
 CREATE INDEX IF NOT EXISTS ix_handlers_user ON issue_group_handlers(user_id, is_primary);
@@ -410,6 +413,21 @@ function ensureColumn(db: AppDatabase, table: string, column: string, definition
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name?: unknown }[];
   if (!columns.some((entry) => entry.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+/** 旧项目补齐「已闭环」状态，用于问题跟踪默认筛选当天未闭环条码。 */
+function ensureClosedStatuses(db: AppDatabase): void {
+  const projects = db.prepare("SELECT id FROM projects").all() as { id: string }[];
+  const now = new Date().toISOString();
+  for (const project of projects) {
+    const hasClosed = db.prepare("SELECT 1 FROM statuses WHERE project_id = ? AND is_closed = 1").get(project.id);
+    if (hasClosed) continue;
+    const maxOrder = (db.prepare("SELECT COALESCE(MAX(sort_order), 0) AS value FROM statuses WHERE project_id = ?").get(project.id) as { value: number }).value;
+    db.prepare(
+      `INSERT INTO statuses (id, project_id, name, color, counts_pending, requires_reason, is_identified, is_default, is_closed, sort_order, created_at)
+       VALUES (?, ?, '已闭环', '#0f766e', 0, 0, 0, 0, 1, ?, ?)`,
+    ).run(`sts_${randomUUID()}`, project.id, maxOrder + 1, now);
   }
 }
 
@@ -457,6 +475,9 @@ export function createDatabase(filePath = databasePath()): AppDatabase {
   ensureColumn(db, "code_list", "node_id", "TEXT");
   ensureColumn(db, "code_list", "usage_note", "TEXT");
   ensureColumn(db, "package_batch_items", "promoted_by_name", "TEXT");
+  ensureColumn(db, "statuses", "is_closed", "INTEGER NOT NULL DEFAULT 0");
+  db.exec("CREATE INDEX IF NOT EXISTS ix_statuses_project_closed ON statuses(project_id, is_closed)");
+  ensureClosedStatuses(db);
   migrateVerificationBatches(db);
   return db;
 }

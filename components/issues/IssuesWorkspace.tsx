@@ -27,7 +27,7 @@ import { IssueDetail } from "@/components/issues/IssueDetail";
 import { Modal } from "@/components/Modal";
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import { useToast } from "@/components/Toast";
-import { formatShortDateTime } from "@/lib/time";
+import { formatDate, formatDateTime, formatShortDateTime } from "@/lib/time";
 
 interface ListResponse {
   rows: BarcodeListRow[];
@@ -43,6 +43,17 @@ interface Filters {
   statusId: string;
   categoryId: string;
   priority: string;
+  entryFrom: string;
+  entryTo: string;
+}
+
+function today(): string {
+  return formatDate(new Date());
+}
+
+function defaultFilters(): Filters {
+  const day = today();
+  return { search: "", groupId: "", statusId: "", categoryId: "", priority: "", entryFrom: day, entryTo: day };
 }
 
 const LIST_TAB = "__issue_list__";
@@ -65,7 +76,8 @@ export function IssuesWorkspace({
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
   const [searchDraft, setSearchDraft] = useState("");
-  const [filters, setFilters] = useState<Filters>({ search: "", groupId: "", statusId: "", categoryId: "", priority: "" });
+  const [filters, setFilters] = useState<Filters>(defaultFilters);
+  const [openOnly, setOpenOnly] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -95,6 +107,9 @@ export function IssuesWorkspace({
         statusId: filters.statusId,
         categoryId: filters.categoryId,
         priority: filters.priority,
+        entryFrom: filters.entryFrom,
+        entryTo: filters.entryTo,
+        openOnly: openOnly ? "1" : "0",
       });
       const result = await apiFetch<ListResponse>(`/api/projects/${projectId}/issues?${params.toString()}`);
       if (currentRequest === requestId.current) {
@@ -107,7 +122,7 @@ export function IssuesWorkspace({
     } finally {
       if (currentRequest === requestId.current) setLoading(false);
     }
-  }, [projectId, page, pageSize, filters]);
+  }, [projectId, page, pageSize, filters, openOnly]);
 
   useEffect(() => { void loadList(); }, [loadList]);
 
@@ -131,6 +146,8 @@ export function IssuesWorkspace({
   const canBulkUpdate = selectedRows.length > 0 && selectedRows.every((row) => row.permissions.canUpdateAllStatuses);
   const canBulkTransfer = selectedRows.length > 0 && selectedRows.every((row) => row.permissions.canTransferAll);
   const activeFilters = [filters.search, filters.groupId, filters.statusId, filters.categoryId, filters.priority].filter(Boolean).length;
+  const rangeActive = Boolean(filters.entryFrom || filters.entryTo) || !openOnly;
+  const isDefaultView = filters.entryFrom === today() && filters.entryTo === today() && openOnly;
   const currentGroupUnion = [...new Set(selectedRows.flatMap((row) => row.groups.map((group) => group.id)))];
   const commonGroups = selectedRows.length === 0
     ? []
@@ -152,7 +169,24 @@ export function IssuesWorkspace({
 
   function resetFilters() {
     setSearchDraft("");
-    setFilters({ search: "", groupId: "", statusId: "", categoryId: "", priority: "" });
+    setFilters(defaultFilters());
+    setOpenOnly(true);
+    setPage(1);
+    focusListTab();
+  }
+
+  /** 显示全部历史条码：清空录入时间范围并取消"仅未闭环"。 */
+  function showAllBarcodes() {
+    setSearchDraft("");
+    setFilters((current) => ({ ...current, entryFrom: "", entryTo: "" }));
+    setOpenOnly(false);
+    setPage(1);
+    focusListTab();
+  }
+
+  function setTodayRange() {
+    const day = today();
+    setFilters((current) => ({ ...current, entryFrom: day, entryTo: day }));
     setPage(1);
     focusListTab();
   }
@@ -310,6 +344,40 @@ export function IssuesWorkspace({
             </select>
           </div>
         </form>
+        <div className="issue-timebar" aria-label="按录入时间筛选">
+          <span className="hint">录入时间</span>
+          <input
+            type="date"
+            className="input"
+            value={filters.entryFrom}
+            max={filters.entryTo || undefined}
+            onChange={(event) => applyFilter("entryFrom", event.target.value)}
+            aria-label="录入开始日期"
+          />
+          <span className="hint">至</span>
+          <input
+            type="date"
+            className="input"
+            value={filters.entryTo}
+            min={filters.entryFrom || undefined}
+            onChange={(event) => applyFilter("entryTo", event.target.value)}
+            aria-label="录入结束日期"
+          />
+          <button type="button" className="btn btn-secondary btn-sm" onClick={setTodayRange}>今天</button>
+          <label className="checkbox-line" style={{ minHeight: 30 }}>
+            <input
+              type="checkbox"
+              checked={openOnly}
+              onChange={(event) => { setOpenOnly(event.target.checked); setPage(1); focusListTab(); }}
+            />
+            仅未闭环
+          </label>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={showAllBarcodes}>显示全部历史</button>
+          <span className="spacer" />
+          <span className="hint">
+            {isDefaultView ? "默认仅显示今天录入且未闭环的条码" : rangeActive ? "已按录入时间/闭环状态筛选" : "已显示全部条码"}
+          </span>
+        </div>
         {filtersOpen ? (
           <div className="filters-panel">
             <div className="field">
@@ -448,6 +516,7 @@ export function IssuesWorkspace({
                       <th>条码 / 库位</th>
                       <th>参与责任组 / 当前处理人</th>
                       <th>状态</th>
+                      <th>录入时间</th>
                       <th>优先级</th>
                       <th>节点</th>
                       <th>更新时间</th>
@@ -456,15 +525,15 @@ export function IssuesWorkspace({
                   </thead>
                   <tbody>
                     {loading && rows.length === 0 ? (
-                      <tr><td colSpan={9}><div className="loading"><span className="spinner" /> 正在加载问题列表…</div></td></tr>
+                      <tr><td colSpan={10}><div className="loading"><span className="spinner" /> 正在加载问题列表…</div></td></tr>
                     ) : listError ? (
-                      <tr><td colSpan={9}><div className="table-empty"><div className="alert alert-error" style={{ display: "inline-flex" }}>{listError}</div></div></td></tr>
+                      <tr><td colSpan={10}><div className="table-empty"><div className="alert alert-error" style={{ display: "inline-flex" }}>{listError}</div></div></td></tr>
                     ) : rows.length === 0 ? (
-                      <tr><td colSpan={9}>
+                      <tr><td colSpan={10}>
                         <div className="empty-state" style={{ padding: "38px 20px" }}>
                           <div className="empty-icon"><Search size={20} /></div>
-                          <h3>{activeFilters ? "没有匹配的问题" : "暂无问题记录"}</h3>
-                          <p>{activeFilters ? "尝试调整筛选条件，或清除筛选后查看全部。" : "点击上方「录入问题」开始追踪。"}</p>
+                          <h3>{activeFilters || rangeActive ? "没有匹配的问题" : "暂无问题记录"}</h3>
+                          <p>{activeFilters || rangeActive ? "尝试调整搜索、录入时间或点击「显示全部历史」。" : "点击上方「录入问题」开始追踪。"}</p>
                         </div>
                       </td></tr>
                     ) : rows.map((row, index) => (
@@ -489,7 +558,8 @@ export function IssuesWorkspace({
                           <button type="button" className="barcode-link" onClick={() => openTab(row.id, row.barcode)}>
                             {row.barcode}
                           </button>
-                          <span className="issue-count-pill">{row.issue_count} 项</span>
+                          <span className="issue-count-pill">{row.entry_count} 次录入</span>
+                          {row.is_closed ? <span className="badge badge-neutral" style={{ marginLeft: 4 }}>已闭环</span> : null}
                           <div className="cell-sub mono">{row.location_no}{row.host_ip ? ` · ${row.host_ip}` : ""}</div>
                         </td>
                         <td className="group-cell">
@@ -515,6 +585,16 @@ export function IssuesWorkspace({
                               <span key={status.id} className="status-badge" style={{ color: status.color, background: `${status.color}12`, borderColor: `${status.color}2e` }}>{status.name}</span>
                             ))}
                           </div>
+                        </td>
+                        <td>
+                          {row.last_entry_at ? (
+                            <>
+                              <span className="mini-meta">{formatShortDateTime(row.last_entry_at)}</span>
+                              {rangeActive && row.matched_entry_count !== row.entry_count ? (
+                                <div className="cell-sub">范围内 {row.matched_entry_count} 次</div>
+                              ) : null}
+                            </>
+                          ) : <span className="hint">—</span>}
                         </td>
                         <td><span className={`priority priority-${row.priority.toLowerCase()}`}>{row.priority_label}</span></td>
                         <td>{row.category_name ? <span className="chip">{row.category_name}</span> : <span className="hint">—</span>}</td>

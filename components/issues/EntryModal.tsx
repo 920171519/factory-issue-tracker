@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, MapPin, RadioTower, Server, WandSparkles } from "lucide-react";
 import { Modal } from "@/components/Modal";
-import { apiFetch, errorMessage } from "@/lib/client-api";
+import { apiFetch, ApiError, errorMessage } from "@/lib/client-api";
 import type { GroupDirectoryEntry } from "@/components/issues/types";
 import type { ProjectCategory } from "@/lib/issues";
 
@@ -37,6 +37,7 @@ export function EntryModal({ projectId, groups, defaultGroupIds, categories, onC
   const [categoryId, setCategoryId] = useState("");
   const [priority, setPriority] = useState("MEDIUM");
   const [remark, setRemark] = useState("");
+  const [errorItem, setErrorItem] = useState("");
   const [deviceIp, setDeviceIp] = useState("");
   const [host, setHost] = useState<{ hostIp: string; hostAccount: string | null } | null>(null);
   const [pending, setPending] = useState(false);
@@ -92,16 +93,10 @@ export function EntryModal({ projectId, groups, defaultGroupIds, categories, onC
     setGroupIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setError("");
-    if (groupIds.length === 0) {
-      setError("请选择至少一个参与责任组");
-      return;
-    }
-    setPending(true);
-    try {
-      const created = await apiFetch<{ barcodeId: string; issueId: string }>(`/api/projects/${projectId}/issues`, {
+  async function sendEntry(append: boolean) {
+    return apiFetch<{ barcodeId: string; issueId: string; appended: boolean; entryIndex?: number }>(
+      `/api/projects/${projectId}/issues`,
+      {
         method: "POST",
         body: JSON.stringify({
           barcode: barcode.trim(),
@@ -111,10 +106,40 @@ export function EntryModal({ projectId, groups, defaultGroupIds, categories, onC
           priority,
           remark,
           deviceIp: deviceIp || null,
+          errorItem,
+          append,
         }),
-      });
+      },
+    );
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (groupIds.length === 0) {
+      setError("请选择至少一个参与责任组");
+      return;
+    }
+    setPending(true);
+    try {
+      const created = await sendEntry(false);
       onCreated(created.barcodeId, barcode.trim());
     } catch (submitError) {
+      if (submitError instanceof ApiError && submitError.status === 409) {
+        const confirmed = window.confirm(
+          `条码「${barcode.trim()}」已于此前录入。\n\n是否作为本次复测/再次出现的问题，追加一条新的录入记录？\n（每次录入都会保留独立的录入时间与报错测试项）`,
+        );
+        if (confirmed) {
+          try {
+            const appended = await sendEntry(true);
+            onCreated(appended.barcodeId, barcode.trim());
+            return;
+          } catch (appendError) {
+            setError(errorMessage(appendError));
+            return;
+          }
+        }
+      }
       setError(errorMessage(submitError));
     } finally {
       setPending(false);
@@ -124,7 +149,7 @@ export function EntryModal({ projectId, groups, defaultGroupIds, categories, onC
   return (
     <Modal
       title="录入问题"
-      description="录入条码后，系统会按每个参与责任组的当前排班解析处理人并发送通知。"
+      description="录入条码后，系统会按每个参与责任组的当前排班解析处理人并发送通知。同一條码可在复测后再次录入，每次都会保留独立的录入时间与报错测试项。"
       size="lg"
       onClose={() => (pending ? null : onClose())}
       footer={
@@ -160,6 +185,11 @@ export function EntryModal({ projectId, groups, defaultGroupIds, categories, onC
         <div className="field">
           <label>设备在云主机中的 IP</label>
           <input className="input" value={deviceIp} onChange={(event) => setDeviceIp(event.target.value)} placeholder="可通过设备接口自动获取" maxLength={100} />
+        </div>
+        <div className="field full">
+          <label>本次报错测试项</label>
+          <input className="input" value={errorItem} onChange={(event) => setErrorItem(event.target.value)} maxLength={500} placeholder="例如：满载测试时报错 CPU 温度超阈值（可留空，稍后再追加）" />
+          <div className="field-hint">同一條码复测后再次出现问题时，可再次录入并填写本次报错；问题跟踪会按录入时间区分每次错误。</div>
         </div>
         <div className="field full">
           <label>参与责任组 <span className="required">*</span></label>

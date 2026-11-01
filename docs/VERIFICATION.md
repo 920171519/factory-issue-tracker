@@ -336,3 +336,34 @@ pnpm seed
 - `node scripts/e2e-packages.mjs`：13/13 步通过（转验证拒绝组织批次、缺链接/缺条码返回 400、转正后修改返回 409、条码台账含电子流程）
 - `node scripts/ui-packages.mjs`：11/11 项通过（测试版本不显示、说明列与节点筛选、逐包处理弹窗、条码台账、问题跟踪节点反查软件包）
 - `node scripts/ui-issues-tabs.mjs`：12/12 通过（问题跟踪页回归）
+
+## 17. 问题跟踪：录入时间筛选、同一条码多次录入与默认未闭环（2026-11-02）
+
+### 需求与规则
+
+- 问题跟踪支持按录入日期/时间段筛选问题。
+- 同一个条码在复测后可能再次出现错误并被再次录入：每次录入独立保留录入时间与报错测试项，可按条码查看历史错误变化。
+- 列表默认只显示「当天录入且未闭环」的条码，避免历史条码过多导致页面卡顿；按时间查询时，重复录入的记录在任一次录入日期都能查出。
+- 「闭环」由状态标记：状态管理新增 `is_closed`；默认新增「已闭环」，旧项目启动时自动补齐。全部问题项均已闭环的条码视为已闭环。
+
+### 实现要点
+
+- 列表默认参数：`entryFrom=今天&entryTo=今天&openOnly=1`；工具区新增录入时间起止、「今天」「仅未闭环」「显示全部历史」与当前视图提示。
+- 筛选在问题项级别：`EXISTS (issues WHERE created_at 在区间)`；返回 `entry_count`、`matched_entry_count`、`last_entry_at`、`is_closed`，列表按最近录入时间倒序，展示录入时间列与「N 次录入」「范围内 N 次」「已闭环」。
+- 再次录入：`POST /issues` 增加 `append` 与 `errorItem`；重复条码返回 409 且 `details.requiresAppend=true`，录入弹窗确认后以 `append=true` 追加，生成独立 issue、按当前排班重新解析处理人并通知。
+- 条码详情：新增「录入历史（共 N 次）」摘要，每条问题项标注「第 N 次录入 · 时间 · 录入人」；状态历史与责任路径按录入分别展示。
+- 索引：`issues(barcode_id, created_at)`、`statuses(project_id, is_closed)`。
+
+### 验证结果
+
+- `pnpm typecheck`：通过
+- `pnpm test`：48/48 通过（新增 7 项：同一條码两次录入、追加通知与责任历史、按日筛选、重复条码匹配次数、仅未闭环、最近录入排序、闭环状态）
+- `pnpm build`：编译成功
+- `node scripts/ui-issues-history.mjs`：5/5 通过（默认今天+未闭环、录入时间列与次数、详情录入历史、无数据日期空结果、显示全部历史）
+- `node scripts/ui-issues-tabs.mjs`：12/12 通过
+- `node scripts/ui-packages.mjs`、`node scripts/e2e-packages.mjs`：回归通过
+
+### 演示数据
+
+- `XH-CPU-2601001` 追加一次「复测再次出现：满载压测温度超过 95℃ 阈值」录入，详情可见多次录入历史。
+- 演示项目默认有「已闭环」状态，可在「项目配置 → 问题状态」中维护。

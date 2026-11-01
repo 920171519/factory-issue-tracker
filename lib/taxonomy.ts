@@ -25,6 +25,7 @@ export interface StatusView {
   requiresReason: boolean;
   isIdentified: boolean;
   isDefault: boolean;
+  isClosed: boolean;
   sortOrder: number;
   issueCount: number;
 }
@@ -126,7 +127,10 @@ function normalizeColor(color?: string): string {
 export function listStatuses(projectId: string): StatusView[] {
   return getDb()
     .prepare(
-      `SELECT s.*,
+      `SELECT s.id, s.name, s.color,
+              s.counts_pending AS countsPending, s.requires_reason AS requiresReason,
+              s.is_identified AS isIdentified, s.is_default AS isDefault, s.is_closed AS isClosed,
+              s.sort_order AS sortOrder,
               (SELECT COUNT(*) FROM issues i WHERE i.status_id = s.id) AS issueCount
        FROM statuses s WHERE s.project_id = ? ORDER BY s.sort_order, s.name`,
     )
@@ -143,6 +147,7 @@ export function createStatus(
     requiresReason?: boolean;
     isIdentified?: boolean;
     isDefault?: boolean;
+    isClosed?: boolean;
   },
 ): { id: string } {
   requireProjectManager(userId, projectId);
@@ -160,8 +165,8 @@ export function createStatus(
     if (input.isDefault) db.prepare("UPDATE statuses SET is_default = 0 WHERE project_id = ?").run(projectId);
     db.prepare(
       `INSERT INTO statuses
-        (id, project_id, name, color, counts_pending, requires_reason, is_identified, is_default, sort_order, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, project_id, name, color, counts_pending, requires_reason, is_identified, is_default, is_closed, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       projectId,
@@ -171,6 +176,7 @@ export function createStatus(
       input.requiresReason ? 1 : 0,
       input.isIdentified ? 1 : 0,
       input.isDefault ? 1 : 0,
+      input.isClosed ? 1 : 0,
       maxOrder + 1,
       nowIso(),
     );
@@ -189,6 +195,7 @@ export function updateStatus(
     requiresReason?: boolean;
     isIdentified?: boolean;
     isDefault?: boolean;
+    isClosed?: boolean;
     sortOrder?: number;
   },
 ): void {
@@ -202,6 +209,7 @@ export function updateStatus(
         requires_reason: number;
         is_identified: number;
         is_default: number;
+        is_closed: number;
         sort_order: number;
       }
     | undefined;
@@ -220,7 +228,7 @@ export function updateStatus(
     if (input.isDefault) db.prepare("UPDATE statuses SET is_default = 0 WHERE project_id = ?").run(projectId);
     db.prepare(
       `UPDATE statuses SET name = ?, color = ?, counts_pending = ?, requires_reason = ?,
-              is_identified = ?, is_default = ?, sort_order = ? WHERE id = ?`,
+              is_identified = ?, is_default = ?, is_closed = ?, sort_order = ? WHERE id = ?`,
     ).run(
       name,
       color,
@@ -228,6 +236,7 @@ export function updateStatus(
       input.requiresReason === undefined ? current.requires_reason : input.requiresReason ? 1 : 0,
       input.isIdentified === undefined ? current.is_identified : input.isIdentified ? 1 : 0,
       input.isDefault === undefined ? current.is_default : input.isDefault ? 1 : 0,
+      input.isClosed === undefined ? current.is_closed : input.isClosed ? 1 : 0,
       input.sortOrder === undefined ? current.sort_order : Math.floor(input.sortOrder),
       statusId,
     );

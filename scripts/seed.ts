@@ -9,6 +9,7 @@ import {
   createGroup,
 } from "../lib/groups";
 import { createCategory, listTimeSlotViews, saveHost, setDefaultGroups, createCode } from "../lib/taxonomy";
+import { appendBarcodeEntry } from "../lib/issues";
 import {
   concludeItem,
   concludeVerification,
@@ -288,6 +289,24 @@ async function seedPackageDemo(
   });
 }
 
+/** 演示同一條码复测后再次录入（保留两次录入时间与报错项）。 */
+function seedRepeatEntry(projectId: string, ids: Record<string, string>, cpuGroupId: string): void {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT id FROM barcodes WHERE project_id = ? AND barcode = ?")
+    .get(projectId, "XH-CPU-2601001") as { id: string } | undefined;
+  if (!row) return;
+  const exists = db
+    .prepare("SELECT 1 FROM issues WHERE barcode_id = ? AND error_item LIKE '复测再次出现%'")
+    .get(row.id);
+  if (exists) return;
+  appendBarcodeEntry(projectId, ids.tester, row.id, {
+    errorItem: "复测再次出现：满载压测温度超过 95℃ 阈值",
+    groupIds: [cpuGroupId],
+    notify: false,
+  });
+}
+
 async function main() {
   const db = getDb();
 
@@ -305,6 +324,7 @@ async function main() {
       repair: groupIdByName(existing.id, "维修组"),
       retest: groupIdByName(existing.id, "复测组"),
     });
+    seedRepeatEntry(existing.id, ids, groupIdByName(existing.id, "CPU 测试组"));
     console.log("\n演示项目已存在，跳过基础种子数据创建（已补齐软件包演示数据）。");
     console.log(`项目：${existing.name}（${existing.id}）`);
     console.log(`登录账号：a00000001（系统管理员）/ ${PASSWORD}`);
@@ -460,6 +480,7 @@ async function main() {
     remark: "疑似散热结构问题，转维修组进一步处理。",
   });
   addErrorIssue(projectId, fourth.barcodeId, ids.cpuLeader, { errorItem: "散热模组固定螺柱滑牙" });
+  seedRepeatEntry(projectId, ids, cpuGroup);
   transferResponsibility({
     projectId,
     userId: ids.pm,
@@ -485,7 +506,7 @@ async function main() {
   console.log("  r00000009   孙磊        维修组负责人");
   console.log("  t00000010   吴倩        复测组负责人");
   console.log("  q00000011   郑一        测试录入人（普通项目成员）");
-  console.log("  m00000012   周敏        软件经理（组织转测试/转验证批次）");
+  console.log("  m00000012   周敏        软件经理（组织转测试 / 逐包处理转验证）");
   console.log("\n登录地址：http://localhost:3000/login");
 }
 

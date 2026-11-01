@@ -25,7 +25,7 @@ import { Modal } from "@/components/Modal";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import { useToast } from "@/components/Toast";
-import { formatDateTime } from "@/lib/time";
+import { formatDateTime, formatShortDateTime } from "@/lib/time";
 
 interface IssueDetailProps {
   projectId: string;
@@ -268,13 +268,25 @@ export function IssueDetail({
           <span>问题与责任追踪</span>
           <span className="hint">同一内容只通知配置责任人</span>
         </div>
+        {barcode.issues.length > 1 ? (
+          <div className="entry-history">
+            <div className="mini-meta" style={{ marginBottom: 6 }}>录入历史（共 {barcode.issues.length} 次，按时间先后）</div>
+            <div className="chip-list">
+              {barcode.issues.map((issue, index) => (
+                <span key={issue.id} className="chip" title={issue.errorItem || "未填写报错项"}>
+                  第 {index + 1} 次 · {formatShortDateTime(issue.createdAt)} · {issue.status.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {barcode.issues.map((issue, index) => {
           const groupNames = issue.groups.map((group) => group.groupName).join("、");
           return (
             <div className="issue-item-card" key={issue.id}>
               <div className="issue-item-head">
                 <div style={{ minWidth: 0 }}>
-                  <div className="issue-item-index">问题项 #{index + 1}</div>
+                  <div className="issue-item-index">第 {index + 1} 次录入 · {formatDateTime(issue.createdAt)} · {issue.creator}</div>
                   <div className="issue-item-title" style={{ marginTop: 3 }}>{issue.errorItem || "首次录入问题（未填写报错项）"}</div>
                 </div>
                 <span className="status-badge" style={{ color: issue.status.color, background: `${issue.status.color}15`, borderColor: `${issue.status.color}30` }}>
