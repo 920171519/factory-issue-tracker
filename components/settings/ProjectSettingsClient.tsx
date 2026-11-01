@@ -104,7 +104,7 @@ export function ProjectSettingsClient({
 
   const tabs: { id: Tab; label: string; icon: typeof Settings2 }[] = [
     { id: "general", label: "基本设置", icon: Settings2 },
-    { id: "categories", label: "问题分类", icon: Tags },
+    { id: "categories", label: "问题归属节点", icon: Tags },
     { id: "statuses", label: "问题状态", icon: FolderCog },
     { id: "slots", label: "班次模板", icon: Clock3 },
     { id: "defaults", label: "默认责任组", icon: ShieldCheck },
@@ -117,7 +117,7 @@ export function ProjectSettingsClient({
         <div>
           <div className="page-kicker">Project Configuration</div>
           <h1 className="page-title">项目配置</h1>
-          <p className="page-sub">配置问题分类、业务状态、项目班次模板与默认责任组。责任组的具体成员与排班由组负责人维护。</p>
+          <p className="page-sub">配置问题归属节点、业务状态、项目班次模板与默认责任组。责任组的具体成员与排班由组负责人维护。</p>
         </div>
         {!isPm ? <div className="header-actions"><span className="badge badge-blue">项目主管 · 只读</span></div> : null}
       </div>
@@ -212,19 +212,19 @@ function CategorySection({ projectId, categories, isPm, busy, run }: {
     await run("add-category", async () => {
       await apiFetch(`/api/projects/${projectId}/categories`, { method: "POST", body: JSON.stringify({ name, color }) });
       setName("");
-      toast.success("问题分类已新增");
+      toast.success("问题归属节点已新增");
     });
   }
 
   return (
     <div className="stack-sm">
       <div className="card">
-        <div className="card-header"><div><h2 className="section-title">问题分类</h2><div className="section-sub">分类是可选统计标签，不绑定责任组、不配置责任人，不作为责任路由依据。</div></div></div>
+        <div className="card-header"><div><h2 className="section-title">问题归属节点</h2><div className="section-sub">分类是可选统计标签，不绑定责任组、不配置责任人，不作为责任路由依据。</div></div></div>
         <div className="table-wrap">
           <table className="table config-table">
             <thead><tr><th>分类名称</th><th>颜色</th><th>使用条码数</th><th></th></tr></thead>
             <tbody>
-              {categories.length === 0 ? <tr><td colSpan={4}><div className="table-empty">暂无问题分类。</div></td></tr> : categories.map((category) => (
+              {categories.length === 0 ? <tr><td colSpan={4}><div className="table-empty">暂无问题归属节点。</div></td></tr> : categories.map((category) => (
                 <CategoryRow key={`${category.id}-${category.name}-${category.color}`} projectId={projectId} category={category} isPm={isPm} busy={busy} run={run} />
               ))}
             </tbody>
@@ -233,7 +233,7 @@ function CategorySection({ projectId, categories, isPm, busy, run }: {
       </div>
       {isPm ? (
         <form className="card card-pad" onSubmit={add}>
-          <div className="panel-title">新增问题分类</div>
+          <div className="panel-title">新增问题归属节点</div>
           <div className="inline-form">
             <div className="field" style={{ maxWidth: 260 }}><label>名称</label><input className="input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：电源异常" required maxLength={40} /></div>
             <div className="field" style={{ maxWidth: 100 }}><label>颜色</label><input className="input color-input" type="color" value={color} onChange={(event) => setColor(event.target.value)} /></div>

@@ -9,9 +9,6 @@ const schema = z.object({
   title: z.string().trim().max(120).optional(),
   scheduledDate: z.string().trim().max(20).nullable().optional(),
   note: z.string().max(2000).optional(),
-  barcodes: z
-    .array(z.object({ requestId: z.string().min(1), barcodes: z.array(z.string().max(80)).max(20) }))
-    .optional(),
 });
 
 export async function POST(request: NextRequest, context: { params: Promise<{ projectId: string }> }) {

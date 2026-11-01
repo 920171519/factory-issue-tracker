@@ -11,6 +11,7 @@ import {
   getProjectStatuses,
 } from "@/lib/issues";
 import { IssuesWorkspace } from "@/components/issues/IssuesWorkspace";
+import { listPackageNodeRefs } from "@/lib/packages";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "问题跟踪" };
@@ -63,6 +64,7 @@ export default async function IssuesPage({
       defaultGroupIds={defaultGroupIds}
       statuses={statuses}
       categories={categories}
+      nodePackages={listPackageNodeRefs(projectId)}
       initialBarcodeId={initialBarcodeLabel ? initialBarcodeId : undefined}
       initialBarcodeLabel={initialBarcodeLabel}
       initialOpenCreate={initialOpenCreate}

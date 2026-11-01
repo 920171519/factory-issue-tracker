@@ -35,7 +35,7 @@ export const STATUS_LABELS: Record<PackageStatus, string> = {
   TEST_PENDING: "待组织转测",
   IN_TEST: "测试中",
   TEST_PASSED: "待提交转验证",
-  VERIFY_PENDING: "待组织验证",
+  VERIFY_PENDING: "待处理验证",
   IN_VERIFY: "验证中",
   READY: "可转正",
 };
@@ -56,6 +56,9 @@ interface CodeRow {
   groupName: string | null;
   ownerId: string | null;
   ownerName: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+  usageNote: string | null;
   testVersion: string | null;
   verificationVersion: string | null;
   updatedAt: string;
@@ -105,6 +108,9 @@ export interface PackageOverview {
   groupName: string | null;
   ownerId: string | null;
   ownerName: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+  usageNote: string | null;
   officialVersion: string | null;
   testVersion: string | null;
   verificationVersion: string | null;
@@ -113,7 +119,7 @@ export interface PackageOverview {
   lastTestConclusion: Conclusion | null;
   lastTestBatchCode: string | null;
   lastVerifyConclusion: Conclusion | null;
-  lastVerifyBatchCode: string | null;
+  lastVerifyProcessUrl: string | null;
   updatedAt: string;
 }
 
@@ -203,6 +209,33 @@ export interface OpenTestItem {
   conclusion: Conclusion;
 }
 
+/** 逐包转验证记录（转验证不再有批次，由软件经理逐包处理）。 */
+export interface VerificationView {
+  id: string;
+  requestId: string | null;
+  packageId: string;
+  packageCode: string;
+  packageName: string | null;
+  groupId: string | null;
+  groupName: string | null;
+  version: string | null;
+  officialVersion: string | null;
+  processUrl: string | null;
+  barcodes: string[];
+  conclusion: Conclusion;
+  conclusionNote: string;
+  concludedByName: string | null;
+  concludedAt: string | null;
+  promoted: boolean;
+  promotedAt: string | null;
+  promotedByName: string | null;
+  handledByName: string | null;
+  handledAt: string | null;
+  submittedByName: string | null;
+  submittedAt: string | null;
+  createdAt: string;
+}
+
 /** 验证条码台账：按条码查看所属软件包与验证结论。 */
 export interface BarcodeEntry {
   barcode: string;
@@ -211,8 +244,8 @@ export interface BarcodeEntry {
   packageName: string | null;
   groupName: string | null;
   version: string | null;
-  batchId: string;
-  batchCode: string;
+  processUrl: string | null;
+  verificationId: string;
   conclusion: Conclusion;
   concludedAt: string | null;
   promoted: boolean;
@@ -229,6 +262,8 @@ export interface PackagePermissions {
   canOrganize: boolean;
   canConclude: boolean;
   canPromote: boolean;
+  /** 软件经理/PM/主管逐包处理转验证申请（填写电子流程链接与条码）。 */
+  canHandleVerification: boolean;
   /** PM / 主管 / 软件经理可以为任意责任组的软件包提交申请。 */
   canSubmitAny: boolean;
   groupIds: string[];
@@ -243,11 +278,12 @@ export interface PackagesPayload {
   pendingTestRequests: RequestView[];
   pendingVerifyRequests: RequestView[];
   testBatches: BatchView[];
-  verifyBatches: BatchView[];
-  promoteCandidates: BatchItemView[];
+  verifications: VerificationView[];
+  promoteCandidates: VerificationView[];
   verifyRequestCandidates: BatchItemView[];
   openTestItems: OpenTestItem[];
   barcodeLedger: BarcodeEntry[];
+  nodes: { id: string; name: string }[];
   stats: {
     total: number;
     official: number;
@@ -338,6 +374,7 @@ export function permissionsFor(projectId: string, userId: string): PackagePermis
     canOrganize: access.isPm || access.isSupervisor || access.isSoftwareManager,
     canConclude: isTester || access.isPm || access.isSupervisor,
     canPromote: access.isPm || access.isSupervisor,
+    canHandleVerification: access.isPm || access.isSupervisor || access.isSoftwareManager,
     canSubmitAny,
     groupIds: access.groupIds,
   };
@@ -375,11 +412,13 @@ function listCodeRows(projectId: string): CodeRow[] {
   return getDb()
     .prepare(
       `SELECT c.id, c.code, c.description, c.version, c.group_id AS groupId, g.name AS groupName,
-              c.owner_id AS ownerId, u.name AS ownerName, c.test_version AS testVersion,
+              c.owner_id AS ownerId, u.name AS ownerName, c.node_id AS nodeId, cat.name AS nodeName,
+              c.usage_note AS usageNote, c.test_version AS testVersion,
               c.verification_version AS verificationVersion, c.updated_at AS updatedAt
        FROM code_list c
        LEFT JOIN groups g ON g.id = c.group_id
        LEFT JOIN users u ON u.id = c.owner_id
+       LEFT JOIN categories cat ON cat.id = c.node_id
        WHERE c.project_id = ?
        ORDER BY c.code`,
     )
@@ -391,10 +430,28 @@ export function countPackages(projectId: string): number {
   return row.count;
 }
 
+/** 问题跟踪页用：按归属节点关联软件包，便于从节点问题反查该节点使用的软件包。 */
+export function listPackageNodeRefs(projectId: string): { id: string; code: string; name: string; nodeId: string | null }[] {
+  return getDb()
+    .prepare(
+      `SELECT id, code, COALESCE(description, code) AS name, node_id AS nodeId
+       FROM code_list WHERE project_id = ? ORDER BY code`,
+    )
+    .all(projectId) as { id: string; code: string; name: string; nodeId: string | null }[];
+}
+
 export function createPackage(
   projectId: string,
   userId: string,
-  input: { code: string; description?: string; version?: string; ownerId?: string | null; groupId?: string | null },
+  input: {
+    code: string;
+    description?: string;
+    version?: string;
+    ownerId?: string | null;
+    groupId?: string | null;
+    nodeId?: string | null;
+    usageNote?: string | null;
+  },
 ): { id: string } {
   requireProjectManager(userId, projectId);
   const db = getDb();
@@ -412,10 +469,14 @@ export function createPackage(
     const group = db.prepare("SELECT 1 FROM groups WHERE id = ? AND project_id = ?").get(input.groupId, projectId);
     if (!group) throw new AppError(400, "责任组不存在");
   }
+  if (input.nodeId) {
+    const node = db.prepare("SELECT 1 FROM categories WHERE id = ? AND project_id = ?").get(input.nodeId, projectId);
+    if (!node) throw new AppError(400, "归属节点不存在");
+  }
   const id = newId("cod");
   db.prepare(
-    `INSERT INTO code_list (id, project_id, code, description, version, owner_id, group_id, test_version, verification_version, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+    `INSERT INTO code_list (id, project_id, code, description, version, owner_id, group_id, node_id, usage_note, test_version, verification_version, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
   ).run(
     id,
     projectId,
@@ -424,6 +485,8 @@ export function createPackage(
     input.version?.trim() || null,
     input.ownerId || null,
     input.groupId || null,
+    input.nodeId || null,
+    input.usageNote?.trim() || null,
     nowIso(),
   );
   return { id };
@@ -433,14 +496,25 @@ export function updatePackage(
   projectId: string,
   packageId: string,
   userId: string,
-  input: { code?: string; description?: string | null; version?: string | null; ownerId?: string | null; groupId?: string | null },
+  input: {
+    code?: string;
+    description?: string | null;
+    version?: string | null;
+    ownerId?: string | null;
+    groupId?: string | null;
+    nodeId?: string | null;
+    usageNote?: string | null;
+  },
 ): void {
   requireProjectManager(userId, projectId);
   const db = getDb();
   const current = db
-    .prepare("SELECT code, description, version, owner_id AS ownerId, group_id AS groupId FROM code_list WHERE id = ? AND project_id = ?")
+    .prepare(
+      `SELECT code, description, version, owner_id AS ownerId, group_id AS groupId, node_id AS nodeId, usage_note AS usageNote
+       FROM code_list WHERE id = ? AND project_id = ?`,
+    )
     .get(packageId, projectId) as
-    | { code: string; description: string | null; version: string | null; ownerId: string | null; groupId: string | null }
+    | { code: string; description: string | null; version: string | null; ownerId: string | null; groupId: string | null; nodeId: string | null; usageNote: string | null }
     | undefined;
   if (!current) throw new AppError(404, "软件包不存在");
   const code = input.code === undefined ? current.code : input.code.trim();
@@ -457,14 +531,21 @@ export function updatePackage(
     const group = db.prepare("SELECT 1 FROM groups WHERE id = ? AND project_id = ?").get(input.groupId, projectId);
     if (!group) throw new AppError(400, "责任组不存在");
   }
+  if (input.nodeId) {
+    const node = db.prepare("SELECT 1 FROM categories WHERE id = ? AND project_id = ?").get(input.nodeId, projectId);
+    if (!node) throw new AppError(400, "归属节点不存在");
+  }
   db.prepare(
-    `UPDATE code_list SET code = ?, description = ?, version = ?, owner_id = ?, group_id = ?, updated_at = ? WHERE id = ?`,
+    `UPDATE code_list SET code = ?, description = ?, version = ?, owner_id = ?, group_id = ?, node_id = ?, usage_note = ?, updated_at = ?
+     WHERE id = ?`,
   ).run(
     code,
     input.description === undefined ? current.description : input.description?.trim() || null,
     input.version === undefined ? current.version : input.version?.trim() || null,
     input.ownerId === undefined ? current.ownerId : input.ownerId,
     input.groupId === undefined ? current.groupId : input.groupId,
+    input.nodeId === undefined ? current.nodeId : input.nodeId,
+    input.usageNote === undefined ? current.usageNote : input.usageNote?.trim() || null,
     nowIso(),
     packageId,
   );
@@ -588,34 +669,32 @@ export function createBatch(
   projectId: string,
   userId: string,
   input: {
-    kind: PackageKind;
+    kind?: PackageKind;
     requestIds: string[];
     title?: string;
     scheduledDate?: string | null;
     note?: string;
-    /** 转验证批次组织时必须为每个软件包填写验证条码。 */
-    barcodes?: { requestId: string; barcodes: string[] }[];
   },
 ): { batchId: string; code: string } {
   requireOrganize(projectId, userId);
+  if (input.kind === "VERIFY") throw new AppError(400, "转验证按软件包逐个处理，不再组织批次");
   const db = getDb();
-  const kind: PackageKind = input.kind === "VERIFY" ? "VERIFY" : "TEST";
   const ids = [...new Set(input.requestIds || [])];
   if (ids.length === 0) throw new AppError(400, "请选择要纳入本批次的申请");
 
   const requests = db
     .prepare(
-      `SELECT r.id, r.kind, r.package_id AS packageId, c.code AS packageCode, r.version,
+      `SELECT r.id, r.package_id AS packageId, c.code AS packageCode, r.version,
               r.change_summary AS changeSummary, r.package_url AS packageUrl,
               r.submitted_by AS submittedBy, u.name AS submittedByName
        FROM package_requests r
        JOIN code_list c ON c.id = r.package_id
        JOIN users u ON u.id = r.submitted_by
-       WHERE r.project_id = ? AND r.status = 'PENDING' AND r.id IN (${ids.map(() => "?").join(",")})`,
+       WHERE r.project_id = ? AND r.kind = 'TEST' AND r.status = 'PENDING'
+         AND r.id IN (${ids.map(() => "?").join(",")})`,
     )
     .all(projectId, ...ids) as {
     id: string;
-    kind: PackageKind;
     packageId: string;
     packageCode: string;
     version: string;
@@ -625,52 +704,29 @@ export function createBatch(
     submittedByName: string;
   }[];
   if (requests.length !== ids.length) throw new AppError(400, "部分申请已被处理或已撤回，请刷新后重试");
-  if (requests.some((request) => request.kind !== kind)) throw new AppError(400, "所选申请类型不一致");
-
-  // 转验证：组织批次时必须逐包填写验证条码，便于后续按条码跟踪验证结论。
-  const barcodeMap = new Map<string, string[]>();
-  if (kind === "VERIFY") {
-    for (const entry of input.barcodes || []) {
-      const normalized = [...new Set((entry.barcodes || []).map((code) => code.trim()).filter(Boolean))];
-      if (normalized.length === 0) continue;
-      if (normalized.length > 20) throw new AppError(400, "单个软件包最多绑定 20 个条码");
-      if (normalized.some((code) => code.length > 80)) throw new AppError(400, "条码过长");
-      barcodeMap.set(entry.requestId, normalized);
-    }
-    const missing = requests.filter((request) => (barcodeMap.get(request.id) || []).length === 0);
-    if (missing.length > 0) {
-      throw new AppError(400, `组织转验证时必须填写验证条码：${missing.map((request) => request.packageCode).join("、")}`);
-    }
-  }
 
   const requested = new Map(requests.map((request) => [request.packageId, request]));
   const packages = listCodeRows(projectId);
-  if (kind === "VERIFY") {
-    const missing = requests.filter((request) => !packages.some((pkg) => pkg.id === request.packageId));
-    if (missing.length > 0) throw new AppError(400, "部分软件包不存在");
-  }
 
-  const seq = nextBatchSeq(projectId, kind);
+  const seq = nextBatchSeq(projectId, "TEST");
   const year = todayLocal().slice(0, 4);
-  const batchCode = `${kind === "TEST" ? "T" : "V"}-${year}-${String(seq).padStart(3, "0")}`;
+  const batchCode = `T-${year}-${String(seq).padStart(3, "0")}`;
   const batchId = newId("pbt");
   const createdAt = nowIso();
 
-  // 上一批转测（同项目、同类型）中每个软件包的版本，用于「相较上次转测是否更新」。
+  // 上一批转测（同项目）中每个软件包的版本，用于「相较上次转测是否更新」。
   const previousVersions = new Map<string, string>();
-  if (kind === "TEST") {
-    const previousBatch = db
-      .prepare(
-        `SELECT b.id FROM package_batches b WHERE b.project_id = ? AND b.kind = 'TEST'
-         ORDER BY b.seq DESC LIMIT 1`,
-      )
-      .get(projectId) as { id: string } | undefined;
-    if (previousBatch) {
-      const rows = db
-        .prepare("SELECT package_id AS packageId, version FROM package_batch_items WHERE batch_id = ?")
-        .all(previousBatch.id) as { packageId: string; version: string | null }[];
-      for (const row of rows) previousVersions.set(row.packageId, row.version || "");
-    }
+  const previousBatch = db
+    .prepare(
+      `SELECT b.id FROM package_batches b WHERE b.project_id = ? AND b.kind = 'TEST'
+       ORDER BY b.seq DESC LIMIT 1`,
+    )
+    .get(projectId) as { id: string } | undefined;
+  if (previousBatch) {
+    const rows = db
+      .prepare("SELECT package_id AS packageId, version FROM package_batch_items WHERE batch_id = ?")
+      .all(previousBatch.id) as { packageId: string; version: string | null }[];
+    for (const row of rows) previousVersions.set(row.packageId, row.version || "");
   }
 
   const insertItem = db.prepare(
@@ -679,23 +735,21 @@ export function createBatch(
        updated_vs_official, updated_vs_previous, previous_version, request_id, change_summary, package_url, submitted_by,
        submitted_by_name, conclusion, conclusion_note, concluded_by, concluded_by_name, concluded_at, barcodes,
        promoted, promoted_at, promoted_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', NULL, NULL, NULL, ?, 0, NULL, NULL, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', NULL, NULL, NULL, '[]', 0, NULL, NULL, ?)`,
   );
 
   const setTestVersion = db.prepare("UPDATE code_list SET test_version = ?, updated_at = ? WHERE id = ?");
-  const setVerificationVersion = db.prepare("UPDATE code_list SET verification_version = ?, updated_at = ? WHERE id = ?");
   const markRequest = db.prepare("UPDATE package_requests SET status = 'BATCHED', batch_item_id = ? WHERE id = ?");
 
   const transaction = db.transaction(() => {
     db.prepare(
       `INSERT INTO package_batches (id, project_id, kind, seq, code, title, scheduled_date, note, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(batchId, projectId, kind, seq, batchCode, (input.title || "").trim(), input.scheduledDate || todayLocal(), (input.note || "").trim(), userId, createdAt);
+       VALUES (?, ?, 'TEST', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(batchId, projectId, seq, batchCode, (input.title || "").trim(), input.scheduledDate || todayLocal(), (input.note || "").trim(), userId, createdAt);
 
-    const targets = kind === "TEST" ? packages : packages.filter((pkg) => requested.has(pkg.id));
-    if (targets.length === 0) throw new AppError(400, "没有可纳入配套表的软件包");
+    if (packages.length === 0) throw new AppError(400, "没有可纳入配套表的软件包");
 
-    for (const pkg of targets) {
+    for (const pkg of packages) {
       const request = requested.get(pkg.id);
       const officialVersion = pkg.version || "";
       const version = request ? request.version : officialVersion;
@@ -722,12 +776,10 @@ export function createBatch(
         request?.packageUrl || null,
         request?.submittedBy || null,
         request?.submittedByName || null,
-        JSON.stringify(request ? barcodeMap.get(request.id) || [] : []),
         createdAt,
       );
       if (request) {
-        if (kind === "TEST") setTestVersion.run(version, createdAt, pkg.id);
-        else setVerificationVersion.run(version, createdAt, pkg.id);
+        setTestVersion.run(version, createdAt, pkg.id);
         markRequest.run(itemId, request.id);
       }
     }
@@ -753,6 +805,7 @@ export function concludeItem(
     )
     .get(itemId, batchId, projectId) as { id: string; requestId: string | null; projectId: string; kind: PackageKind } | undefined;
   if (!item) throw new AppError(404, "批次条目不存在");
+  if (item.kind !== "TEST") throw new AppError(400, "转验证按软件包逐个处理，请使用逐包处理入口");
   if (!item.requestId) throw new AppError(400, "只有本批次实际转测的软件包需要填写结论");
   const conclusion: Conclusion = ["PASS", "FAIL", "CONDITIONAL"].includes(input.conclusion) ? input.conclusion : "PENDING";
   const note = tail(input.note || "");
@@ -764,67 +817,207 @@ export function concludeItem(
     `UPDATE package_batch_items SET conclusion = ?, conclusion_note = ?, concluded_by = ?, concluded_by_name = ?, concluded_at = ?
      WHERE id = ?`,
   ).run(conclusion, note, userId, operator?.name || null, nowIso(), itemId);
+
+  // 已出测试结论后不再有「当前测试版本」：只有仍在测试中的批次保留 test_version。
+  const packageRow = db.prepare("SELECT package_id AS packageId FROM package_batch_items WHERE id = ?").get(itemId) as { packageId: string };
+  const openItem = db
+    .prepare(
+      `SELECT i.version FROM package_batch_items i JOIN package_batches b ON b.id = i.batch_id
+       WHERE i.package_id = ? AND b.kind = 'TEST' AND i.request_id IS NOT NULL AND i.conclusion = 'PENDING'
+       ORDER BY b.seq DESC LIMIT 1`,
+    )
+    .get(packageRow.packageId) as { version: string | null } | undefined;
+  db.prepare("UPDATE code_list SET test_version = ?, updated_at = ? WHERE id = ?").run(
+    openItem ? openItem.version : null,
+    nowIso(),
+    packageRow.packageId,
+  );
 }
 
-export function setItemBarcodes(
-  projectId: string,
-  batchId: string,
-  itemId: string,
-  userId: string,
-  barcodes: string[],
-): void {
-  const permissions = permissionsFor(projectId, userId);
-  if (!permissions.canConclude && !permissions.canOrganize) throw new AppError(403, "无权维护验证条码");
-  const db = getDb();
-  const item = db
-    .prepare(
-      `SELECT i.id, b.kind FROM package_batch_items i JOIN package_batches b ON b.id = i.batch_id
-       WHERE i.id = ? AND i.batch_id = ? AND b.project_id = ?`,
-    )
-    .get(itemId, batchId, projectId) as { id: string; kind: PackageKind } | undefined;
-  if (!item) throw new AppError(404, "批次条目不存在");
-  if (item.kind !== "VERIFY") throw new AppError(400, "只有转验证批次可绑定验证条码");
+/* --------------------- 转验证（逐包处理，无批次） --------------------- */
+
+function normalizeBarcodeList(barcodes: string[]): string[] {
   const normalized = [...new Set((barcodes || []).map((entry) => entry.trim()).filter(Boolean))];
   if (normalized.length > 20) throw new AppError(400, "单个软件包最多绑定 20 个条码");
   if (normalized.some((entry) => entry.length > 80)) throw new AppError(400, "条码过长");
-  db.prepare("UPDATE package_batch_items SET barcodes = ? WHERE id = ?").run(JSON.stringify(normalized), itemId);
+  return normalized;
 }
 
-export function promoteItems(projectId: string, userId: string, batchId: string, itemIds: string[], note?: string): { promoted: number } {
+export function handleVerification(
+  projectId: string,
+  userId: string,
+  input: { requestId: string; processUrl: string; barcodes: string[] },
+): { verificationId: string } {
+  const permissions = permissionsFor(projectId, userId);
+  if (!permissions.canHandleVerification) throw new AppError(403, "仅软件经理、项目 PM 或项目主管可处理转验证申请");
+  const db = getDb();
+  const request = db
+    .prepare(
+      `SELECT r.id, r.package_id AS packageId, r.version, r.source_item_id AS sourceItemId,
+              c.code AS packageCode, c.description AS packageName, c.version AS officialVersion,
+              c.group_id AS groupId, g.name AS groupName
+       FROM package_requests r
+       JOIN code_list c ON c.id = r.package_id
+       LEFT JOIN groups g ON g.id = c.group_id
+       WHERE r.id = ? AND r.project_id = ? AND r.kind = 'VERIFY' AND r.status = 'PENDING'`,
+    )
+    .get(input.requestId, projectId) as
+    | {
+        id: string;
+        packageId: string;
+        version: string;
+        sourceItemId: string | null;
+        packageCode: string;
+        packageName: string | null;
+        officialVersion: string | null;
+        groupId: string | null;
+        groupName: string | null;
+      }
+    | undefined;
+  if (!request) throw new AppError(404, "转验证申请不存在或已处理");
+  const processUrl = normalizeUrl(input.processUrl);
+  if (!processUrl) throw new AppError(400, "请填写电子流程链接");
+  const barcodes = normalizeBarcodeList(input.barcodes || []);
+  if (barcodes.length === 0) throw new AppError(400, "请填写至少一个验证条码");
+  const duplicate = db
+    .prepare("SELECT 1 FROM package_verifications WHERE project_id = ? AND package_id = ? AND version = ?")
+    .get(projectId, request.packageId, request.version);
+  if (duplicate) throw new AppError(409, "该软件包此版本已有转验证记录");
+
+  const operator = db.prepare("SELECT name FROM users WHERE id = ?").get(userId) as { name: string } | undefined;
+  const now = nowIso();
+  const verificationId = newId("pvf");
+  const transaction = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO package_verifications
+        (id, project_id, package_id, request_id, test_item_id, package_code, package_name, group_id, group_name,
+         version, official_version, process_url, barcodes, conclusion, conclusion_note, concluded_by,
+         concluded_by_name, concluded_at, promoted, promoted_at, promoted_by, promoted_by_name,
+         handled_by, handled_by_name, handled_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', NULL, NULL, NULL, 0, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
+    ).run(
+      verificationId,
+      projectId,
+      request.packageId,
+      request.id,
+      request.sourceItemId,
+      request.packageCode,
+      request.packageName,
+      request.groupId,
+      request.groupName,
+      request.version,
+      request.officialVersion,
+      processUrl,
+      JSON.stringify(barcodes),
+      userId,
+      operator?.name || null,
+      now,
+      now,
+      now,
+    );
+    db.prepare("UPDATE package_requests SET status = 'BATCHED', batch_item_id = ? WHERE id = ?").run(verificationId, request.id);
+    db.prepare("UPDATE code_list SET verification_version = ?, updated_at = ? WHERE id = ?").run(request.version, now, request.packageId);
+  });
+  transaction();
+  return { verificationId };
+}
+
+export function updateVerification(
+  projectId: string,
+  userId: string,
+  verificationId: string,
+  input: { processUrl?: string; barcodes?: string[] },
+): void {
+  const permissions = permissionsFor(projectId, userId);
+  if (!permissions.canHandleVerification) throw new AppError(403, "仅软件经理、项目 PM 或项目主管可维护转验证信息");
+  const db = getDb();
+  const current = db
+    .prepare("SELECT id, promoted, process_url AS processUrl, barcodes FROM package_verifications WHERE id = ? AND project_id = ?")
+    .get(verificationId, projectId) as { id: string; promoted: number; processUrl: string | null; barcodes: string } | undefined;
+  if (!current) throw new AppError(404, "转验证记录不存在");
+  if (current.promoted === 1) throw new AppError(409, "已转正的记录不能再修改");
+  let processUrl = current.processUrl;
+  if (input.processUrl !== undefined) {
+    processUrl = normalizeUrl(input.processUrl);
+    if (!processUrl) throw new AppError(400, "请填写电子流程链接");
+  }
+  let barcodes = current.barcodes;
+  if (input.barcodes !== undefined) {
+    const normalized = normalizeBarcodeList(input.barcodes);
+    if (normalized.length === 0) throw new AppError(400, "请填写至少一个验证条码");
+    barcodes = JSON.stringify(normalized);
+  }
+  db.prepare("UPDATE package_verifications SET process_url = ?, barcodes = ?, updated_at = ? WHERE id = ?").run(
+    processUrl,
+    barcodes,
+    nowIso(),
+    verificationId,
+  );
+}
+
+export function concludeVerification(
+  projectId: string,
+  userId: string,
+  verificationId: string,
+  input: { conclusion: Conclusion; note?: string },
+): void {
+  requireConclude(projectId, userId);
+  const db = getDb();
+  const current = db
+    .prepare("SELECT id, promoted FROM package_verifications WHERE id = ? AND project_id = ?")
+    .get(verificationId, projectId) as { id: string; promoted: number } | undefined;
+  if (!current) throw new AppError(404, "转验证记录不存在");
+  if (current.promoted === 1) throw new AppError(409, "已转正的记录不能再修改验证结论");
+  const conclusion: Conclusion = ["PASS", "FAIL", "CONDITIONAL"].includes(input.conclusion) ? input.conclusion : "PENDING";
+  const note = tail(input.note || "");
+  if ((conclusion === "FAIL" || conclusion === "CONDITIONAL") && !note) {
+    throw new AppError(400, "不通过或有条件通过时必须填写说明");
+  }
+  const operator = db.prepare("SELECT name FROM users WHERE id = ?").get(userId) as { name: string } | undefined;
+  db.prepare(
+    `UPDATE package_verifications SET conclusion = ?, conclusion_note = ?, concluded_by = ?, concluded_by_name = ?, concluded_at = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(conclusion, note, userId, operator?.name || null, nowIso(), nowIso(), verificationId);
+}
+
+export function promoteVerifications(projectId: string, userId: string, verificationIds: string[]): { promoted: number } {
   requirePromote(projectId, userId);
   const db = getDb();
-  const ids = [...new Set(itemIds || [])];
+  const ids = [...new Set(verificationIds || [])];
   if (ids.length === 0) throw new AppError(400, "请选择要转正的软件包");
-  const batch = db
-    .prepare("SELECT id, kind FROM package_batches WHERE id = ? AND project_id = ?")
-    .get(batchId, projectId) as { id: string; kind: PackageKind } | undefined;
-  if (!batch) throw new AppError(404, "批次不存在");
-  if (batch.kind !== "VERIFY") throw new AppError(400, "只有转验证批次可执行转正");
-  const items = db
+  const rows = db
     .prepare(
-      `SELECT id, package_id AS packageId, version, conclusion, promoted FROM package_batch_items
-       WHERE batch_id = ? AND id IN (${ids.map(() => "?").join(",")})`,
+      `SELECT id, package_id AS packageId, version, conclusion, promoted, process_url AS processUrl
+       FROM package_verifications WHERE project_id = ? AND id IN (${ids.map(() => "?").join(",")})`,
     )
-    .all(batchId, ...ids) as { id: string; packageId: string; version: string | null; conclusion: Conclusion; promoted: number }[];
-  if (items.length !== ids.length) throw new AppError(400, "部分软件包不属于该批次");
-  const invalid = items.filter((item) => item.conclusion !== "PASS" || item.promoted === 1);
+    .all(projectId, ...ids) as {
+    id: string;
+    packageId: string;
+    version: string | null;
+    conclusion: Conclusion;
+    promoted: number;
+    processUrl: string | null;
+  }[];
+  if (rows.length !== ids.length) throw new AppError(400, "部分软件包不属于当前项目的转验证记录");
+  const invalid = rows.filter((row) => row.conclusion !== "PASS" || row.promoted === 1);
   if (invalid.length > 0) throw new AppError(400, "仅验证结论为「通过」且未转正的软件包可转正");
+  const missingProcess = rows.filter((row) => !row.processUrl);
+  if (missingProcess.length > 0) throw new AppError(400, "转正前需要先填写电子流程链接");
 
   const operator = db.prepare("SELECT name FROM users WHERE id = ?").get(userId) as { name: string } | undefined;
   const promotedAt = nowIso();
-  const promoteItem = db.prepare(
-    "UPDATE package_batch_items SET promoted = 1, promoted_at = ?, promoted_by = ?, promoted_by_name = ? WHERE id = ?",
+  const promoteVerification = db.prepare(
+    "UPDATE package_verifications SET promoted = 1, promoted_at = ?, promoted_by = ?, promoted_by_name = ?, updated_at = ? WHERE id = ?",
   );
   const promotePackage = db.prepare("UPDATE code_list SET version = ?, updated_at = ? WHERE id = ?");
   const transaction = db.transaction(() => {
-    for (const item of items) {
-      if (item.version) promotePackage.run(item.version, promotedAt, item.packageId);
-      promoteItem.run(promotedAt, userId, operator?.name || null, item.id);
+    for (const row of rows) {
+      if (row.version) promotePackage.run(row.version, promotedAt, row.packageId);
+      promoteVerification.run(promotedAt, userId, operator?.name || null, promotedAt, row.id);
     }
   });
   transaction();
-  void note;
-  return { promoted: items.length };
+  return { promoted: rows.length };
 }
 
 /* ----------------------------- 查询 ----------------------------- */
@@ -837,7 +1030,7 @@ function latestItems(projectId: string): ItemRow[] {
        FROM package_batch_items i
        JOIN package_batches b ON b.id = i.batch_id
        LEFT JOIN package_requests r ON r.id = i.request_id
-       WHERE b.project_id = ?
+       WHERE b.project_id = ? AND b.kind = 'TEST'
        ORDER BY b.seq DESC, i.package_code ASC`,
     )
     .all(projectId) as ItemRow[];
@@ -973,45 +1166,92 @@ function listOpenTestItems(projectId: string): OpenTestItem[] {
   }));
 }
 
-function listBarcodeLedger(projectId: string): BarcodeEntry[] {
-  const rows = getDb()
+interface VerificationRow {
+  id: string;
+  package_id: string;
+  request_id: string | null;
+  package_code: string;
+  package_name: string | null;
+  group_id: string | null;
+  group_name: string | null;
+  version: string | null;
+  official_version: string | null;
+  process_url: string | null;
+  barcodes: string;
+  conclusion: Conclusion;
+  conclusion_note: string;
+  concluded_by_name: string | null;
+  concluded_at: string | null;
+  promoted: number;
+  promoted_at: string | null;
+  promoted_by_name: string | null;
+  handled_by_name: string | null;
+  handled_at: string | null;
+  created_at: string;
+  request_submitted_at?: string | null;
+  submitted_by_name?: string | null;
+}
+
+function listVerificationRows(projectId: string): VerificationRow[] {
+  return getDb()
     .prepare(
-      `SELECT i.id, i.package_id AS packageId, i.package_code AS packageCode, i.package_name AS packageName,
-              i.group_name AS groupName, i.version, i.barcodes, i.conclusion, i.concluded_at AS concludedAt,
-              i.promoted, i.promoted_at AS promotedAt,
-              b.id AS batchId, b.code AS batchCode
-       FROM package_batch_items i JOIN package_batches b ON b.id = i.batch_id
-       WHERE b.project_id = ? AND b.kind = 'VERIFY'
-       ORDER BY b.seq DESC, i.package_code ASC`,
+      `SELECT v.*, r.submitted_at AS request_submitted_at, u.name AS submitted_by_name
+       FROM package_verifications v
+       LEFT JOIN package_requests r ON r.id = v.request_id
+       LEFT JOIN users u ON u.id = r.submitted_by
+       WHERE v.project_id = ?
+       ORDER BY v.created_at DESC, v.package_code ASC`,
     )
-    .all(projectId) as {
-    packageId: string;
-    packageCode: string;
-    packageName: string | null;
-    groupName: string | null;
-    version: string | null;
-    barcodes: string;
-    conclusion: Conclusion;
-    concludedAt: string | null;
-    promoted: number;
-    promotedAt: string | null;
-    batchId: string;
-    batchCode: string;
-  }[];
-  return rows.flatMap((row) =>
+    .all(projectId) as VerificationRow[];
+}
+
+function toVerificationView(row: VerificationRow): VerificationView {
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    packageId: row.package_id,
+    packageCode: row.package_code,
+    packageName: row.package_name,
+    groupId: row.group_id,
+    groupName: row.group_name,
+    version: row.version,
+    officialVersion: row.official_version,
+    processUrl: row.process_url,
+    barcodes: parseBarcodes(row.barcodes),
+    conclusion: row.conclusion,
+    conclusionNote: row.conclusion_note,
+    concludedByName: row.concluded_by_name,
+    concludedAt: row.concluded_at,
+    promoted: row.promoted === 1,
+    promotedAt: row.promoted_at,
+    promotedByName: row.promoted_by_name,
+    handledByName: row.handled_by_name,
+    handledAt: row.handled_at,
+    submittedByName: row.submitted_by_name || null,
+    submittedAt: row.request_submitted_at ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+export function listVerifications(projectId: string): VerificationView[] {
+  return listVerificationRows(projectId).map(toVerificationView);
+}
+
+function listBarcodeLedger(projectId: string): BarcodeEntry[] {
+  return listVerificationRows(projectId).flatMap((row) =>
     parseBarcodes(row.barcodes).map((barcode) => ({
       barcode,
-      packageId: row.packageId,
-      packageCode: row.packageCode,
-      packageName: row.packageName,
-      groupName: row.groupName,
+      packageId: row.package_id,
+      packageCode: row.package_code,
+      packageName: row.package_name,
+      groupName: row.group_name,
       version: row.version,
-      batchId: row.batchId,
-      batchCode: row.batchCode,
+      processUrl: row.process_url,
+      verificationId: row.id,
       conclusion: row.conclusion,
-      concludedAt: row.concludedAt,
+      concludedAt: row.concluded_at,
       promoted: row.promoted === 1,
-      promotedAt: row.promotedAt,
+      promotedAt: row.promoted_at,
     })),
   );
 }
@@ -1038,20 +1278,23 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
     ).map((row) => row.id),
   );
 
-  const byPackage = new Map<string, { test?: ItemRow; verify?: ItemRow; openTest?: ItemRow; openVerify?: ItemRow; ready?: ItemRow; passedTest?: ItemRow }>();
+  const byPackage = new Map<string, { test?: ItemRow; openTest?: ItemRow; ready?: VerificationRow; passedTest?: ItemRow; verify?: VerificationRow; openVerify?: VerificationRow }>();
   for (const item of items) {
     const entry = byPackage.get(item.package_id) || {};
-    if (item.batch_kind === "TEST") {
-      // 只有本批实际转测的软件包才代表一次真实结论；未变更行不参与结论展示。
-      if (!entry.test && item.request_id) entry.test = item;
-      if (!entry.openTest && item.conclusion === "PENDING" && item.request_id) entry.openTest = item;
-      if (!entry.passedTest && item.conclusion === "PASS" && item.request_id && !consumedTestItems.has(item.id)) entry.passedTest = item;
-    } else {
-      if (!entry.verify) entry.verify = item;
-      if (!entry.openVerify && item.conclusion === "PENDING" && item.request_id) entry.openVerify = item;
-      if (!entry.ready && item.conclusion === "PASS" && item.promoted === 0) entry.ready = item;
-    }
+    // 只有本批实际转测的软件包才代表一次真实结论；未变更行不参与结论展示。
+    if (!entry.test && item.request_id) entry.test = item;
+    if (!entry.openTest && item.conclusion === "PENDING" && item.request_id) entry.openTest = item;
+    if (!entry.passedTest && item.conclusion === "PASS" && item.request_id && !consumedTestItems.has(item.id)) entry.passedTest = item;
     byPackage.set(item.package_id, entry);
+  }
+  // 逐包转验证记录（按时间倒序，首次命中即最新）。
+  const verificationRows = listVerificationRows(projectId);
+  for (const verification of verificationRows) {
+    const entry = byPackage.get(verification.package_id) || {};
+    if (!entry.verify) entry.verify = verification;
+    if (!entry.openVerify && verification.conclusion === "PENDING" && verification.promoted === 0) entry.openVerify = verification;
+    if (!entry.ready && verification.conclusion === "PASS" && verification.promoted === 0) entry.ready = verification;
+    byPackage.set(verification.package_id, entry);
   }
 
   const pendingTestByPackage = new Set(requests.filter((request) => request.kind === "TEST").map((request) => request.packageId));
@@ -1074,15 +1317,18 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
       groupName: code.groupName,
       ownerId: code.ownerId,
       ownerName: code.ownerName,
+      nodeId: code.nodeId,
+      nodeName: code.nodeName,
+      usageNote: code.usageNote,
       officialVersion: code.version,
-      testVersion: code.testVersion,
+      testVersion: entry.openTest?.version ?? null,
       verificationVersion: code.verificationVersion,
       status,
       statusLabel: STATUS_LABELS[status],
       lastTestConclusion: entry.test?.conclusion ?? null,
       lastTestBatchCode: entry.test?.batch_code ?? null,
       lastVerifyConclusion: entry.verify?.conclusion ?? null,
-      lastVerifyBatchCode: entry.verify?.batch_code ?? null,
+      lastVerifyProcessUrl: entry.verify?.process_url ?? null,
       updatedAt: code.updatedAt,
     };
   });
@@ -1097,13 +1343,16 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
     )
     .all(projectId) as { id: string; name: string; employeeNo: string }[];
 
-  const verifyBatches = listBatches(projectId, "VERIFY");
-  const promoteCandidates = verifyBatches.flatMap((batch) => batch.items).filter((item) => item.conclusion === "PASS" && !item.promoted);
+  const verifications = verificationRows.map(toVerificationView);
+  const promoteCandidates = verifications.filter((item) => item.conclusion === "PASS" && !item.promoted);
   const verifyRequestCandidates = [...byPackage.values()]
     .map((entry) => entry.passedTest)
     .filter((item): item is ItemRow => Boolean(item))
     .map(toItemView);
   const openTestItems = listOpenTestItems(projectId);
+  const nodes = db
+    .prepare("SELECT id, name FROM categories WHERE project_id = ? ORDER BY name")
+    .all(projectId) as { id: string; name: string }[];
 
   return {
     packages,
@@ -1114,11 +1363,12 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
     pendingTestRequests: listRequests(projectId, "TEST"),
     pendingVerifyRequests: listRequests(projectId, "VERIFY"),
     testBatches: listBatches(projectId, "TEST"),
-    verifyBatches,
+    verifications,
     promoteCandidates,
     verifyRequestCandidates,
     openTestItems,
     barcodeLedger: listBarcodeLedger(projectId),
+    nodes,
     stats: {
       total: packages.length,
       official: packages.filter((pkg) => pkg.status === "OFFICIAL").length,
@@ -1136,7 +1386,7 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
 
 export interface HistoryEvent {
   id: string;
-  type: "REQUEST" | "BATCH" | "CONCLUSION" | "BARCODES" | "PROMOTE";
+  type: "REQUEST" | "BATCH" | "VERIFICATION" | "CONCLUSION" | "PROMOTE";
   kind: PackageKind;
   at: string;
   title: string;
@@ -1144,6 +1394,7 @@ export interface HistoryEvent {
   version: string | null;
   batchCode: string | null;
   batchId: string | null;
+  processUrl?: string | null;
   operatorName: string | null;
   conclusion?: Conclusion;
 }
@@ -1177,14 +1428,16 @@ export function getPackageHistory(
     submittedByName: string;
   }[];
 
-  const items = db
+  const testItems = db
     .prepare(
       `SELECT i.*, b.code AS batch_code, b.kind AS batch_kind, b.created_at AS batch_created_at
        FROM package_batch_items i JOIN package_batches b ON b.id = i.batch_id
-       WHERE b.project_id = ? AND i.package_id = ?
+       WHERE b.project_id = ? AND i.package_id = ? AND b.kind = 'TEST'
        ORDER BY b.created_at ASC`,
     )
     .all(projectId, packageId) as ItemRow[];
+
+  const verifications = listVerificationRows(projectId).filter((row) => row.package_id === packageId);
 
   const events: HistoryEvent[] = [];
   for (const request of requests) {
@@ -1205,14 +1458,13 @@ export function getPackageHistory(
     });
   }
 
-  for (const item of items) {
-    const kindLabel = item.batch_kind === "TEST" ? "转测试" : "转验证";
+  for (const item of testItems) {
     events.push({
       id: `batch-${item.id}`,
       type: "BATCH",
-      kind: item.batch_kind || "TEST",
+      kind: "TEST",
       at: item.batch_created_at || item.created_at,
-      title: `${kindLabel}批次 ${item.batch_code} 组织`,
+      title: `转测试批次 ${item.batch_code} 组织`,
       detail: item.request_id
         ? `纳入本批配套表，版本 ${item.version}（${item.updated_vs_official ? `更新自正式版本 ${item.official_version || "—"}` : "版本未变"}）`
         : `随配套表下发正式版本 ${item.official_version || "—"}`,
@@ -1225,9 +1477,9 @@ export function getPackageHistory(
       events.push({
         id: `conclusion-${item.id}`,
         type: "CONCLUSION",
-        kind: item.batch_kind || "TEST",
+        kind: "TEST",
         at: item.concluded_at,
-        title: `${kindLabel}结论：${CONCLUSION_LABELS[item.conclusion]}`,
+        title: `测试结论：${CONCLUSION_LABELS[item.conclusion]}`,
         detail: item.conclusion_note || "未填写说明",
         version: item.version,
         batchCode: item.batch_code || null,
@@ -1236,39 +1488,61 @@ export function getPackageHistory(
         conclusion: item.conclusion,
       });
     }
-    const barcodes = parseBarcodes(item.barcodes);
-    if (barcodes.length > 0) {
+  }
+
+  for (const verification of verifications) {
+    const barcodes = parseBarcodes(verification.barcodes);
+    events.push({
+      id: `verify-${verification.id}`,
+      type: "VERIFICATION",
+      kind: "VERIFY",
+      at: verification.handled_at || verification.created_at,
+      title: `转验证处理 · 版本 ${verification.version || "—"}`,
+      detail: [
+        verification.process_url ? `电子流程：${verification.process_url}` : "未填写电子流程链接",
+        barcodes.length > 0 ? `验证条码：${barcodes.join("、")}` : "未绑定条码",
+      ].join(" · "),
+      version: verification.version,
+      batchCode: null,
+      batchId: null,
+      processUrl: verification.process_url,
+      operatorName: verification.handled_by_name,
+    });
+    if (verification.conclusion !== "PENDING" && verification.concluded_at) {
       events.push({
-        id: `barcodes-${item.id}`,
-        type: "BARCODES",
+        id: `verify-conclusion-${verification.id}`,
+        type: "CONCLUSION",
         kind: "VERIFY",
-        at: item.concluded_at || item.created_at,
-        title: "绑定验证条码",
-        detail: barcodes.join("、"),
-        version: item.version,
-        batchCode: item.batch_code || null,
-        batchId: item.batch_id,
-        operatorName: null,
+        at: verification.concluded_at,
+        title: `验证结论：${CONCLUSION_LABELS[verification.conclusion]}`,
+        detail: verification.conclusion_note || "未填写说明",
+        version: verification.version,
+        batchCode: null,
+        batchId: null,
+        processUrl: verification.process_url,
+        operatorName: verification.concluded_by_name,
+        conclusion: verification.conclusion,
       });
     }
-    if (item.promoted === 1) {
+    if (verification.promoted === 1) {
       events.push({
-        id: `promote-${item.id}`,
+        id: `promote-${verification.id}`,
         type: "PROMOTE",
         kind: "VERIFY",
-        at: item.promoted_at || item.created_at,
-        title: `转为正式版本 ${item.version || ""}`.trim(),
-        detail: `正式版本由 ${item.official_version || "—"} 更新为 ${item.version || "—"}`,
-        version: item.version,
-        batchCode: item.batch_code || null,
-        batchId: item.batch_id,
-        operatorName: item.promoted_by_name,
+        at: verification.promoted_at || verification.created_at,
+        title: `转为正式版本 ${verification.version || ""}`.trim(),
+        detail: `正式版本由 ${verification.official_version || "—"} 更新为 ${verification.version || "—"}`,
+        version: verification.version,
+        batchCode: null,
+        batchId: null,
+        processUrl: verification.process_url,
+        operatorName: verification.promoted_by_name,
       });
     }
   }
 
   // 同一毫秒内产生的多个事件按流程先后倒序排列，保证历史稳定可读。
-  const rank: Record<HistoryEvent["type"], number> = { REQUEST: 1, BATCH: 2, BARCODES: 3, CONCLUSION: 4, PROMOTE: 5 };
+  const rank: Record<HistoryEvent["type"], number> = { REQUEST: 1, BATCH: 2, VERIFICATION: 3, CONCLUSION: 4, PROMOTE: 5 };
   events.sort((left, right) => {
     if (left.at !== right.at) return left.at < right.at ? 1 : -1;
     return (rank[right.type] || 0) - (rank[left.type] || 0);

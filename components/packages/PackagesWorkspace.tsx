@@ -40,9 +40,11 @@ const STATUS_ORDER: PackageStatus[] = [
 export function PackagesWorkspace({
   projectId,
   currentUser,
+  initialNodeId = "",
 }: {
   projectId: string;
   currentUser: { id: string; name: string };
+  initialNodeId?: string;
 }) {
   const toast = useToast();
   const [data, setData] = useState<PackagesPayload | null>(null);
@@ -51,6 +53,7 @@ export function PackagesWorkspace({
   const [tab, setTab] = useState<TabKey>("overview");
   const [search, setSearch] = useState("");
   const [groupFilter, setGroupFilter] = useState("");
+  const [nodeFilter, setNodeFilter] = useState(initialNodeId);
   const [statusFilter, setStatusFilter] = useState("");
   const [editor, setEditor] = useState<{ mode: "create" } | { mode: "edit"; pkg: PackageOverview } | null>(null);
   const [historyPackage, setHistoryPackage] = useState<{ id: string; code: string } | null>(null);
@@ -86,12 +89,13 @@ export function PackagesWorkspace({
     if (!data) return [];
     const keyword = search.trim().toLowerCase();
     return data.packages.filter((pkg) => {
-      if (keyword && !`${pkg.code} ${pkg.name} ${pkg.ownerName || ""}`.toLowerCase().includes(keyword)) return false;
+      if (keyword && !`${pkg.code} ${pkg.name} ${pkg.ownerName || ""} ${pkg.nodeName || ""} ${pkg.usageNote || ""}`.toLowerCase().includes(keyword)) return false;
       if (groupFilter && pkg.groupId !== groupFilter) return false;
+      if (nodeFilter && pkg.nodeId !== nodeFilter) return false;
       if (statusFilter && pkg.status !== statusFilter) return false;
       return true;
     });
-  }, [data, search, groupFilter, statusFilter]);
+  }, [data, search, groupFilter, nodeFilter, statusFilter]);
 
   const pendingTest = data?.pendingTestRequests.length || 0;
   const pendingVerify = data?.pendingVerifyRequests.length || 0;
@@ -210,6 +214,12 @@ export function PackagesWorkspace({
                   {data.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
                 </select>
               </div>
+              <div className="field" style={{ maxWidth: 180 }}>
+                <select className="select" value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)} aria-label="按归属节点筛选">
+                  <option value="">全部节点</option>
+                  {data.nodes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
+                </select>
+              </div>
               <div className="field" style={{ maxWidth: 170 }}>
                 <select className="select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="按状态筛选">
                   <option value="">全部状态</option>
@@ -232,6 +242,7 @@ export function PackagesWorkspace({
                     <th>软件包编码 / 名称</th>
                     <th>责任组</th>
                     <th>负责人</th>
+                    <th>说明（项目 / 节点）</th>
                     <th>正式版本</th>
                     <th>验证版本</th>
                     <th>测试版本</th>
@@ -242,7 +253,7 @@ export function PackagesWorkspace({
                 </thead>
                 <tbody>
                   {packages.length === 0 ? (
-                    <tr><td colSpan={9}><EmptyHint title="没有匹配的软件包" description={data.packages.length === 0 ? "先在基础信息中维护软件包？现在请在本页「新增软件包」维护编码清单。" : "尝试调整筛选条件。"} /></td></tr>
+                    <tr><td colSpan={10}><EmptyHint title="没有匹配的软件包" description={data.packages.length === 0 ? "点击右上角「新增软件包」维护编码清单。" : "尝试调整筛选条件。"} /></td></tr>
                   ) : packages.map((pkg) => (
                     <tr key={pkg.id}>
                       <td>
@@ -251,6 +262,12 @@ export function PackagesWorkspace({
                       </td>
                       <td>{pkg.groupName ? <span className="chip">{pkg.groupName}</span> : <span className="hint">未分配</span>}</td>
                       <td>{pkg.ownerName || <span className="hint">—</span>}</td>
+                      <td className="wrap-cell">
+                        <div className="chip-list">
+                          {pkg.nodeName ? <span className="chip">节点：{pkg.nodeName}</span> : <span className="hint">未设置节点</span>}
+                        </div>
+                        <div className="cell-sub">{pkg.usageNote || "—"}</div>
+                      </td>
                       <td><VersionText value={pkg.officialVersion} /></td>
                       <td><VersionText value={pkg.verificationVersion} /></td>
                       <td><VersionText value={pkg.testVersion} /></td>
@@ -268,7 +285,7 @@ export function PackagesWorkspace({
                             <span className="conclusion-line">
                               <span className="hint">验证</span>
                               <ConclusionBadge conclusion={pkg.lastVerifyConclusion} />
-                              {pkg.lastVerifyBatchCode ? <span className="mini-meta mono">{pkg.lastVerifyBatchCode}</span> : null}
+                              {pkg.lastVerifyProcessUrl ? <a className="link" href={pkg.lastVerifyProcessUrl} target="_blank" rel="noreferrer">电子流程</a> : null}
                             </span>
                           ) : null}
                           {!pkg.lastTestConclusion && !pkg.lastVerifyConclusion ? <span className="hint">—</span> : null}
@@ -419,6 +436,8 @@ function PackageEditorModal({
   const [version, setVersion] = useState(target?.officialVersion || "");
   const [groupId, setGroupId] = useState(target?.groupId || "");
   const [ownerId, setOwnerId] = useState(target?.ownerId || "");
+  const [nodeId, setNodeId] = useState(target?.nodeId || "");
+  const [usageNote, setUsageNote] = useState(target?.usageNote || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -429,13 +448,13 @@ function PackageEditorModal({
       if (target) {
         await apiFetch(`/api/projects/${projectId}/packages/${target.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ code, description, version, groupId: groupId || null, ownerId: ownerId || null }),
+          body: JSON.stringify({ code, description, version, groupId: groupId || null, ownerId: ownerId || null, nodeId: nodeId || null, usageNote }),
         });
         toast.success("软件包已更新");
       } else {
         await apiFetch(`/api/projects/${projectId}/packages`, {
           method: "POST",
-          body: JSON.stringify({ code, description, version, groupId: groupId || null, ownerId: ownerId || null }),
+          body: JSON.stringify({ code, description, version, groupId: groupId || null, ownerId: ownerId || null, nodeId: nodeId || null, usageNote }),
         });
         toast.success("软件包已创建");
       }
@@ -490,9 +509,20 @@ function PackageEditorModal({
             {payload.members.map((member) => <option key={member.id} value={member.id}>{member.name}（{member.employeeNo}）</option>)}
           </select>
         </div>
+        <div className="field">
+          <label>归属节点（问题分类）</label>
+          <select className="select" value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
+            <option value="">未设置</option>
+            {payload.nodes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
+          </select>
+        </div>
+        <div className="field" style={{ gridColumn: "1 / -1" }}>
+          <label>说明（使用项目 / 节点补充）</label>
+          <input className="input" value={usageNote} onChange={(event) => setUsageNote(event.target.value)} maxLength={300} placeholder="例如：星河服务器 NPI · 整机老化节点" />
+        </div>
       </div>
       <div className="field-hint" style={{ marginTop: 10 }}>
-        正式版本由转正动作自动更新；手工修改仅用于初始化或纠错。
+        正式版本由转正动作自动更新；手工修改仅用于初始化或纠错。归属节点与问题跟踪中的「问题归属节点」是同一份数据。
       </div>
     </Modal>
   );

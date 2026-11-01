@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS code_list (
   version TEXT,
   owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
+  node_id TEXT,
+  usage_note TEXT,
   test_version TEXT,
   verification_version TEXT,
   updated_at TEXT NOT NULL,
@@ -356,6 +358,39 @@ CREATE INDEX IF NOT EXISTS ix_package_batches_lookup
 CREATE INDEX IF NOT EXISTS ix_package_batch_items_package
   ON package_batch_items(package_id, created_at);
 
+CREATE TABLE IF NOT EXISTS package_verifications (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  package_id TEXT NOT NULL REFERENCES code_list(id) ON DELETE CASCADE,
+  request_id TEXT,
+  test_item_id TEXT,
+  package_code TEXT NOT NULL,
+  package_name TEXT,
+  group_id TEXT,
+  group_name TEXT,
+  version TEXT,
+  official_version TEXT,
+  process_url TEXT,
+  barcodes TEXT NOT NULL DEFAULT '[]',
+  conclusion TEXT NOT NULL DEFAULT 'PENDING',
+  conclusion_note TEXT NOT NULL DEFAULT '',
+  concluded_by TEXT,
+  concluded_by_name TEXT,
+  concluded_at TEXT,
+  promoted INTEGER NOT NULL DEFAULT 0,
+  promoted_at TEXT,
+  promoted_by TEXT,
+  promoted_by_name TEXT,
+  handled_by TEXT,
+  handled_by_name TEXT,
+  handled_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (request_id)
+);
+CREATE INDEX IF NOT EXISTS ix_package_verifications_package
+  ON package_verifications(package_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS ix_barcodes_project_updated ON barcodes(project_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS ix_issues_barcode ON issues(barcode_id);
 CREATE INDEX IF NOT EXISTS ix_issues_project_status ON issues(project_id, status_id);
@@ -378,6 +413,27 @@ function ensureColumn(db: AppDatabase, table: string, column: string, definition
   }
 }
 
+/** 旧版「转验证批次」迁移为逐包验证记录（只执行一次）。 */
+function migrateVerificationBatches(db: AppDatabase): void {
+  const existing = db.prepare("SELECT COUNT(*) AS count FROM package_verifications").get() as { count: number };
+  if (existing.count > 0) return;
+  db.prepare(
+    `INSERT OR IGNORE INTO package_verifications
+      (id, project_id, package_id, request_id, test_item_id, package_code, package_name, group_id, group_name,
+       version, official_version, process_url, barcodes, conclusion, conclusion_note, concluded_by,
+       concluded_by_name, concluded_at, promoted, promoted_at, promoted_by, promoted_by_name,
+       handled_by, handled_by_name, handled_at, created_at, updated_at)
+     SELECT 'pvf_' || i.id, b.project_id, i.package_id, i.request_id,
+            (SELECT r.source_item_id FROM package_requests r WHERE r.id = i.request_id),
+            i.package_code, i.package_name, i.group_id, i.group_name,
+            i.version, i.official_version, NULL, i.barcodes, i.conclusion, i.conclusion_note, i.concluded_by,
+            i.concluded_by_name, i.concluded_at, i.promoted, i.promoted_at, i.promoted_by, i.promoted_by_name,
+            NULL, NULL, i.created_at, i.created_at, i.created_at
+     FROM package_batch_items i JOIN package_batches b ON b.id = i.batch_id
+     WHERE b.kind = 'VERIFY'`,
+  ).run();
+}
+
 export function databasePath(): string {
   return process.env.DATABASE_PATH || "./data/app.db";
 }
@@ -398,7 +454,10 @@ export function createDatabase(filePath = databasePath()): AppDatabase {
   ensureColumn(db, "code_list", "group_id", "TEXT");
   ensureColumn(db, "code_list", "test_version", "TEXT");
   ensureColumn(db, "code_list", "verification_version", "TEXT");
+  ensureColumn(db, "code_list", "node_id", "TEXT");
+  ensureColumn(db, "code_list", "usage_note", "TEXT");
   ensureColumn(db, "package_batch_items", "promoted_by_name", "TEXT");
+  migrateVerificationBatches(db);
   return db;
 }
 

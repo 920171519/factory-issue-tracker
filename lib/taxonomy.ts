@@ -68,12 +68,12 @@ export function listCategories(projectId: string): CategoryView[] {
 export function createCategory(projectId: string, userId: string, input: { name: string; color?: string }): { id: string } {
   requireProjectManager(userId, projectId);
   const name = input.name.trim();
-  if (!name) throw new AppError(400, "请输入问题分类名称");
-  if (name.length > 40) throw new AppError(400, "问题分类名称不能超过 40 个字符");
+  if (!name) throw new AppError(400, "请输入问题归属节点名称");
+  if (name.length > 40) throw new AppError(400, "问题归属节点名称不能超过 40 个字符");
   const color = normalizeColor(input.color);
   const db = getDb();
   if (db.prepare("SELECT 1 FROM categories WHERE project_id = ? AND name = ?").get(projectId, name)) {
-    throw new AppError(409, "同项目下已存在该问题分类");
+    throw new AppError(409, "同项目下已存在该问题归属节点");
   }
   const id = newId("cat");
   db.prepare("INSERT INTO categories (id, project_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)").run(
@@ -97,14 +97,14 @@ export function updateCategory(
   const current = db.prepare("SELECT * FROM categories WHERE id = ? AND project_id = ?").get(categoryId, projectId) as
     | { name: string; color: string }
     | undefined;
-  if (!current) throw new AppError(404, "问题分类不存在");
+  if (!current) throw new AppError(404, "问题归属节点不存在");
   const name = input.name === undefined ? current.name : input.name.trim();
-  if (!name) throw new AppError(400, "问题分类名称不能为空");
+  if (!name) throw new AppError(400, "问题归属节点名称不能为空");
   const color = input.color === undefined ? current.color : normalizeColor(input.color);
   const duplicate = db
     .prepare("SELECT 1 FROM categories WHERE project_id = ? AND name = ? AND id <> ?")
     .get(projectId, name, categoryId);
-  if (duplicate) throw new AppError(409, "同项目下已存在该问题分类");
+  if (duplicate) throw new AppError(409, "同项目下已存在该问题归属节点");
   db.prepare("UPDATE categories SET name = ?, color = ? WHERE id = ?").run(name, color, categoryId);
 }
 
@@ -114,7 +114,7 @@ export function deleteCategory(projectId: string, categoryId: string, userId: st
   const used = db.prepare("SELECT COUNT(*) AS count FROM barcodes WHERE category_id = ?").get(categoryId) as { count: number };
   if (used.count > 0) throw new AppError(409, "该分类已被问题使用，不能删除；可改名保留");
   const result = db.prepare("DELETE FROM categories WHERE id = ? AND project_id = ?").run(categoryId, projectId);
-  if (result.changes === 0) throw new AppError(404, "问题分类不存在");
+  if (result.changes === 0) throw new AppError(404, "问题归属节点不存在");
 }
 
 function normalizeColor(color?: string): string {

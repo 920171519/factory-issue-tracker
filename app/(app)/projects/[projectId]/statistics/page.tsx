@@ -77,7 +77,7 @@ export default async function StatisticsPage({
         <div>
           <div className="page-kicker">Error Intelligence</div>
           <h1 className="page-title">高频报错项统计</h1>
-          <p className="page-sub">按项目、责任组与时间段统计报错项出现频率。问题分类是可选筛选标签，不参与责任路由。</p>
+          <p className="page-sub">按项目、责任组与时间段统计报错项出现频率。问题归属节点是可选筛选标签，不参与责任路由。</p>
         </div>
         <div className="header-actions">
           <Link href={`${base}/issues`} className="btn btn-secondary">返回问题列表</Link>
@@ -102,7 +102,7 @@ export default async function StatisticsPage({
             </select>
           </div>
           <div className="field">
-            <label htmlFor="categoryId">问题分类</label>
+            <label htmlFor="categoryId">问题归属节点</label>
             <select id="categoryId" className="select" name="categoryId" defaultValue={categoryId}>
               <option value="">全部分类</option>
               {stats.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}

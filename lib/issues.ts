@@ -189,7 +189,7 @@ function assertGroupSelection(projectId: string, groupIds: string[]): ProjectGro
 function assertCategory(projectId: string, categoryId?: string | null): string | null {
   if (!categoryId) return null;
   const row = getDb().prepare("SELECT id FROM categories WHERE id = ? AND project_id = ?").get(categoryId, projectId);
-  if (!row) throw new AppError(400, "问题分类不存在");
+  if (!row) throw new AppError(400, "问题归属节点不存在");
   return categoryId;
 }
 

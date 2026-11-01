@@ -147,17 +147,17 @@ export default async function ProjectHomePage({ params }: { params: Promise<{ pr
         <section className="card">
           <div className="card-header">
             <div>
-              <h2 className="section-title">问题分类分布</h2>
-              <div className="section-sub">问题分类仅作为统计与筛选标签，不配置责任人。</div>
+              <h2 className="section-title">问题归属节点分布</h2>
+              <div className="section-sub">问题归属节点仅作为统计与筛选标签，不配置责任人。</div>
             </div>
             <Link href={`${base}/statistics`} className="link-btn">查看高频报错 <ArrowUpRight size={13} /></Link>
           </div>
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>问题分类</th><th>问题总数</th><th>未定位</th><th>已定位</th><th>待处理</th></tr></thead>
+              <thead><tr><th>问题归属节点</th><th>问题总数</th><th>未定位</th><th>已定位</th><th>待处理</th></tr></thead>
               <tbody>
                 {stats.categories.length === 0 ? (
-                  <tr><td colSpan={5}><div className="table-empty">暂无问题分类数据。</div></td></tr>
+                  <tr><td colSpan={5}><div className="table-empty">暂无问题归属节点数据。</div></td></tr>
                 ) : stats.categories.map((category) => (
                   <tr key={category.id}>
                     <td><span className="row" style={{ gap: 7 }}><span className="status-dot" style={{ background: category.color }} /><span className="main-cell">{category.name}</span></span></td>

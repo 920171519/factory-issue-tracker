@@ -7,7 +7,11 @@ import { getDefaultGroupIds } from "@/lib/issues";
 import { getProjectGroups, getProjectCategories } from "@/lib/issues";
 import { sendNotifications } from "@/lib/notifications";
 
-const HEADERS = ["条码", "库位号", "参与责任组", "问题分类", "优先级", "备注"] as const;
+const HEADERS = ["条码", "库位号", "参与责任组", "问题归属节点", "优先级", "备注"] as const;
+/** 兼容旧模板表头（问题分类 = 问题归属节点）。 */
+const HEADER_ALIASES: Record<string, string[]> = {
+  问题归属节点: ["问题归属节点", "问题分类"],
+};
 const MAX_ROWS = 500;
 
 export interface ImportError {
@@ -60,8 +64,8 @@ export function buildImportTemplate(projectId: string): Buffer {
     ["3. 参与责任组可填写一个或多个，多个用顿号、逗号、分号或斜杠分隔。"],
     [`4. 参与责任组留空时使用项目默认责任组：${defaults.length ? defaults.join("、") : "当前项目未配置默认责任组，留空将报错"}。`],
     ["5. 优先级可填：高、中、低；留空默认为中。"],
-    ["6. 问题分类必须是以下已配置分类之一，留空表示不分类。"],
-    [`已配置分类：${categories.length ? categories.map((item) => item.name).join("、") : "无"}`],
+    ["6. 问题归属节点必须是以下已配置节点之一，留空表示不分类（兼容旧表头「问题分类」）。"],
+    [`已配置节点：${categories.length ? categories.map((item) => item.name).join("、") : "无"}`],
     ["7. 导入后系统按每个参与责任组 + 当前星期 + 当前时间段排班解析处理人；排班缺失时按兜底规则分配。"],
     ["8. 本系统当前每行只会创建一个条码初始问题，报错项可在问题详情中继续追加。"],
   ];
@@ -116,7 +120,8 @@ export function importIssuesFromExcel(
   const header = (matrix[0] as unknown[]).map((cell) => cellString(cell));
   const indexes = new Map<string, number>();
   for (const expected of HEADERS) {
-    const index = header.findIndex((cell) => cell === expected);
+    const aliases = HEADER_ALIASES[expected] || [expected];
+    const index = header.findIndex((cell) => aliases.includes(cell));
     if (index === -1) throw new AppError(400, `模板缺少表头「${expected}」，请下载最新模板`);
     indexes.set(expected, index);
   }
@@ -150,7 +155,7 @@ export function importIssuesFromExcel(
     const barcode = cellString(row[indexes.get("条码")!]);
     const locationNo = cellString(row[indexes.get("库位号")!]);
     const groupCell = cellString(row[indexes.get("参与责任组")!]);
-    const categoryCell = cellString(row[indexes.get("问题分类")!]);
+    const categoryCell = cellString(row[indexes.get("问题归属节点")!]);
     const priorityCell = cellString(row[indexes.get("优先级")!]);
     const remark = cellString(row[indexes.get("备注")!]);
     if (!barcode) {
@@ -195,7 +200,7 @@ export function importIssuesFromExcel(
     if (categoryCell) {
       const category = categoryByName.get(categoryCell);
       if (!category) {
-        errors.push({ row: rowNumber, message: `问题分类不存在：${categoryCell}` });
+        errors.push({ row: rowNumber, message: `问题归属节点不存在：${categoryCell}` });
         return;
       }
       categoryId = category.id;

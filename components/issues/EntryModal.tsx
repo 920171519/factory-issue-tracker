@@ -178,7 +178,7 @@ export function EntryModal({ projectId, groups, defaultGroupIds, categories, onC
           <div className="field-hint">可多选；未选择时若项目配置了默认责任组则自动使用默认责任组。所有责任组共同参与问题定位。</div>
         </div>
         <div className="field">
-          <label>问题分类</label>
+          <label>问题归属节点</label>
           <select className="select" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
             <option value="">不分类</option>
             {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}

@@ -121,17 +121,15 @@ export function EmptyHint({ title, description }: { title: string; description?:
 
 /** 测试 / 验证结论录入弹窗，两个流程共用。 */
 export function ConclusionModal({
-  projectId,
-  batchId,
   kind,
   item,
+  submit,
   onClose,
   onSaved,
 }: {
-  projectId: string;
-  batchId: string;
   kind: "TEST" | "VERIFY";
   item: { id: string; packageCode: string; version: string | null; officialVersion: string | null; conclusion: Conclusion; conclusionNote: string; changeSummary?: string };
+  submit: (conclusion: Conclusion, note: string) => Promise<void>;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
@@ -141,14 +139,11 @@ export function ConclusionModal({
   const [error, setError] = useState("");
   const label = kind === "TEST" ? "测试" : "验证";
 
-  async function submit() {
+  async function handleSubmit() {
     setBusy(true);
     setError("");
     try {
-      await apiFetch(`/api/projects/${projectId}/package-batches/${batchId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ action: "conclude", itemId: item.id, conclusion, note }),
-      });
+      await submit(conclusion, note);
       await onSaved();
     } catch (submitError) {
       setError(errorMessage(submitError));
@@ -166,7 +161,7 @@ export function ConclusionModal({
       footer={(
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>取消</button>
-          <button type="button" className="btn btn-primary" onClick={() => void submit()} disabled={busy}>{busy ? "保存中…" : "保存结论"}</button>
+          <button type="button" className="btn btn-primary" onClick={() => void handleSubmit()} disabled={busy}>{busy ? "保存中…" : "保存结论"}</button>
         </>
       )}
     >

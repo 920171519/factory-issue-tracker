@@ -38,6 +38,8 @@ export interface IssueWorkspaceProps {
   defaultGroupIds: string[];
   statuses: ProjectStatus[];
   categories: ProjectCategory[];
+  /** 软件包与归属节点（问题分类）的关联，用于按节点反查使用的软件包。 */
+  nodePackages: { id: string; code: string; name: string; nodeId: string | null }[];
   initialBarcodeId?: string;
   initialBarcodeLabel?: string;
   initialOpenCreate?: boolean;

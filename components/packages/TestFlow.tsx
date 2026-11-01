@@ -252,9 +252,8 @@ export function TestFlow({
       </div>
 
       {organizing ? (
-        <OrganizeBatchModal
+        <OrganizeTestBatchModal
           projectId={projectId}
-          kind="TEST"
           requests={pendingTestRequests.filter((request) => selected.has(request.id))}
           onClose={() => setOrganizing(false)}
           onCreated={async (code) => {
@@ -282,10 +281,14 @@ export function TestFlow({
 
       {concluding ? (
         <ConclusionModal
-          projectId={projectId}
-          batchId={concluding.batch.id}
           kind="TEST"
           item={concluding.item}
+          submit={async (conclusion, note) => {
+            await apiFetch(`/api/projects/${projectId}/package-batches/${concluding.batch.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ action: "conclude", itemId: concluding.item.id, conclusion, note }),
+            });
+          }}
           onClose={() => setConcluding(null)}
           onSaved={async () => {
             setConcluding(null);
@@ -298,15 +301,13 @@ export function TestFlow({
   );
 }
 
-export function OrganizeBatchModal({
+export function OrganizeTestBatchModal({
   projectId,
-  kind,
   requests,
   onClose,
   onCreated,
 }: {
   projectId: string;
-  kind: "TEST" | "VERIFY";
   requests: { id: string; packageCode: string; version: string }[];
   onClose: () => void;
   onCreated: (code: string) => Promise<void>;
@@ -315,35 +316,21 @@ export function OrganizeBatchModal({
   const [title, setTitle] = useState("");
   const [scheduledDate, setScheduledDate] = useState(formatDateTime(new Date(), { dateOnly: true }));
   const [note, setNote] = useState("");
-  const [barcodeDraft, setBarcodeDraft] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  function parseBarcodes(value: string): string[] {
-    return [...new Set(value.split(/[\s,，;；]+/).map((entry) => entry.trim()).filter(Boolean))];
-  }
-
-  const missingBarcode = kind === "VERIFY" && requests.some((request) => parseBarcodes(barcodeDraft[request.id] || "").length === 0);
-
   async function submit() {
     setError("");
-    if (kind === "VERIFY" && missingBarcode) {
-      setError("组织转验证时必须为每个软件包填写至少一个验证条码");
-      return;
-    }
     setBusy(true);
     try {
       const result = await apiFetch<{ batchId: string; code: string }>(`/api/projects/${projectId}/package-batches`, {
         method: "POST",
         body: JSON.stringify({
-          kind,
+          kind: "TEST",
           requestIds: requests.map((request) => request.id),
           title,
           scheduledDate,
           note,
-          barcodes: kind === "VERIFY"
-            ? requests.map((request) => ({ requestId: request.id, barcodes: parseBarcodes(barcodeDraft[request.id] || "") }))
-            : undefined,
         }),
       });
       await onCreated(result.code);
@@ -356,16 +343,14 @@ export function OrganizeBatchModal({
 
   return (
     <Modal
-      title={kind === "TEST" ? "组织转测试批次" : "组织转验证批次"}
-      description={kind === "TEST"
-        ? "将生成该批次的全量配套表，并记录相较正式版本与上一批转测版本的差异。"
-        : "纳入正式服务器验证清单，并为每个软件包填写验证条码（后续可按条码跟踪验证结论）。"}
+      title="组织转测试批次"
+      description="将生成该批次的全量配套表，并记录相较正式版本与上一批转测版本的差异。"
       size="md"
       onClose={onClose}
       footer={(
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>取消</button>
-          <button type="button" className="btn btn-primary" onClick={() => void submit()} disabled={busy || requests.length === 0 || missingBarcode}>
+          <button type="button" className="btn btn-primary" onClick={() => void submit()} disabled={busy || requests.length === 0}>
             {busy ? <><LoaderCircle size={13} className="spin" /> 生成中…</> : "确认组织"}
           </button>
         </>
@@ -389,27 +374,6 @@ export function OrganizeBatchModal({
           <label>组织日期</label>
           <input className="input" type="date" value={scheduledDate} onChange={(event) => setScheduledDate(event.target.value)} />
         </div>
-        {kind === "VERIFY" ? (
-          <div className="field" style={{ gridColumn: "1 / -1" }}>
-            <label>验证条码（每个软件包至少一个，多个用逗号分隔）</label>
-            <div className="organize-barcodes">
-              {requests.map((request) => (
-                <div key={request.id} className="organize-barcode-row">
-                  <span className="mono">{request.packageCode}</span>
-                  <span className="hint">{request.version}</span>
-                  <input
-                    className="input mono"
-                    value={barcodeDraft[request.id] || ""}
-                    onChange={(event) => setBarcodeDraft((current) => ({ ...current, [request.id]: event.target.value }))}
-                    placeholder="例如 XH-CPU-2601001,XH-MIX-2601003"
-                    aria-label={`${request.packageCode} 的验证条码`}
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="field-hint">组织后即可在验证批次中按条码记录验证结论；未填条码无法组织。</div>
-          </div>
-        ) : null}
         <div className="field" style={{ gridColumn: "1 / -1" }}>
           <label>说明</label>
           <textarea className="input" rows={3} value={note} onChange={(event) => setNote(event.target.value)} maxLength={2000} placeholder="本批次的验证范围、注意事项等（可选）" />

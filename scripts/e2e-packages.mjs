@@ -139,47 +139,59 @@ try {
   assert.equal(afterConclusion.data.stats.openTest, 0, "出结论后应移出在测列表");
   step("录入测试结论（必填说明校验、在测列表移除）");
 
-  // 7. 转验证申请
+  // 7. 转验证：逐包处理（无批次），必须填写电子流程链接与验证条码
   const verifyRequest = await call("POST", `/api/projects/${projectId}/package-requests`, {
     kind: "VERIFY", packageId, version: "1.1", sourceItemId: testItem.id, changeSummary: "E2E 转验证",
   });
   assert.equal(verifyRequest.status, 201, `提交转验证申请失败：${JSON.stringify(verifyRequest.data)}`);
-  const missingBarcodes = await call("POST", `/api/projects/${projectId}/package-batches`, {
-    kind: "VERIFY", requestIds: [verifyRequest.data.id], title: "缺少条码",
+  const noBatch = await call("POST", `/api/projects/${projectId}/package-batches`, {
+    kind: "VERIFY", requestIds: [verifyRequest.data.id], title: "不应存在的验证批次",
   });
-  assert.equal(missingBarcodes.status, 400, "组织转验证未填条码应 400");
-  const verifyBatch = await call("POST", `/api/projects/${projectId}/package-batches`, {
-    kind: "VERIFY",
-    requestIds: [verifyRequest.data.id],
-    title: "E2E 第一次转验证",
-    barcodes: [{ requestId: verifyRequest.data.id, barcodes: ["E2E-BAR-1", "E2E-BAR-2", "E2E-BAR-1"] }],
+  assert.equal(noBatch.status, 400, "转验证不再组织批次");
+  const missingLink = await call("POST", `/api/projects/${projectId}/package-verifications`, {
+    requestId: verifyRequest.data.id, processUrl: "", barcodes: ["E2E-BAR-1"],
   });
-  assert.equal(verifyBatch.status, 201, `组织转验证批次失败：${JSON.stringify(verifyBatch.data)}`);
-  assert.match(verifyBatch.data.code, /^V-\d{4}-\d{3}$/, "验证批次号格式应为 V-YYYY-NNN");
-  step("测试通过后提交转验证，组织时必须填写验证条码");
+  assert.equal(missingLink.status, 400, "缺少电子流程链接应 400");
+  const missingBarcode = await call("POST", `/api/projects/${projectId}/package-verifications`, {
+    requestId: verifyRequest.data.id, processUrl: "https://flow.example.com/e2e-1", barcodes: [],
+  });
+  assert.equal(missingBarcode.status, 400, "缺少验证条码应 400");
+  const handled = await call("POST", `/api/projects/${projectId}/package-verifications`, {
+    requestId: verifyRequest.data.id,
+    processUrl: "https://flow.example.com/e2e-1",
+    barcodes: ["E2E-BAR-1", "E2E-BAR-2", "E2E-BAR-1"],
+  });
+  assert.equal(handled.status, 201, `处理转验证失败：${JSON.stringify(handled.data)}`);
+  const verificationId = handled.data.verificationId;
+  const afterHandle = await call("GET", `/api/projects/${projectId}/packages`);
+  assert.equal(afterHandle.data.pendingVerifyRequests.length, 0, "处理后应移出待处理列表");
+  assert.equal(afterHandle.data.verifications.length, 1, "应生成逐包验证记录");
+  const verifyRecord = afterHandle.data.verifications[0];
+  assert.deepEqual(verifyRecord.barcodes, ["E2E-BAR-1", "E2E-BAR-2"], "条码应去重保存");
+  assert.equal(verifyRecord.processUrl, "https://flow.example.com/e2e-1");
+  assert.equal(verifyRecord.conclusion, "PENDING");
+  assert.equal(afterHandle.data.packages.find((entry) => entry.id === packageId).status, "IN_VERIFY");
+  assert.equal(afterHandle.data.barcodeLedger.length, 2, "条码台账应按条码展开");
+  step("测试通过后提交转验证，软件经理逐包填写电子流程链接与条码");
 
-  const afterVerifyBatch = await call("GET", `/api/projects/${projectId}/packages`);
-  const verifyBatchView = afterVerifyBatch.data.verifyBatches.find((batch) => batch.id === verifyBatch.data.batchId);
-  assert.equal(verifyBatchView.items.length, 1, "转验证批次只包含被申请的软件包");
-  const verifyItem = verifyBatchView.items[0];
-  assert.deepEqual(verifyItem.barcodes, ["E2E-BAR-1", "E2E-BAR-2"], "条码应在组织时去重保存");
-  assert.equal(afterVerifyBatch.data.barcodeLedger.length, 2, "条码台账应按条码展开");
-  assert.equal(afterVerifyBatch.data.barcodeLedger[0].packageId, packageId);
-  assert.equal(afterVerifyBatch.data.barcodeLedger[0].conclusion, "PENDING");
-
-  // 8. 验证结论
-  const verifyConclusion = await call("PATCH", `/api/projects/${projectId}/package-batches/${verifyBatch.data.batchId}`, {
-    action: "conclude", itemId: verifyItem.id, conclusion: "PASS", note: "正式服务器验证通过",
+  // 8. 修改转验证信息 + 验证结论
+  const update = await call("PATCH", `/api/projects/${projectId}/package-verifications/${verificationId}`, {
+    action: "update", processUrl: "https://flow.example.com/e2e-2", barcodes: ["E2E-BAR-1", "E2E-BAR-2"],
+  });
+  assert.equal(update.status, 200, `更新转验证信息失败：${JSON.stringify(update.data)}`);
+  const verifyConclusion = await call("PATCH", `/api/projects/${projectId}/package-verifications/${verificationId}`, {
+    action: "conclude", conclusion: "PASS", note: "正式服务器验证通过",
   });
   assert.equal(verifyConclusion.status, 200, `验证结论失败：${JSON.stringify(verifyConclusion.data)}`);
   const withConclusion = await call("GET", `/api/projects/${projectId}/packages`);
   assert.equal(withConclusion.data.promoteCandidates.length, 1, "验证通过后应出现可转正条目");
   assert.equal(withConclusion.data.barcodeLedger[0].conclusion, "PASS");
-  step("录入验证结论，条码台账同步验证结果");
+  assert.equal(withConclusion.data.barcodeLedger[0].processUrl, "https://flow.example.com/e2e-2");
+  step("更新电子流程链接并录入验证结论，条码台账同步");
 
   // 9. 转正
-  const promote = await call("PATCH", `/api/projects/${projectId}/package-batches/${verifyBatch.data.batchId}`, {
-    action: "promote", itemIds: [verifyItem.id],
+  const promote = await call("PATCH", `/api/projects/${projectId}/package-verifications`, {
+    action: "promote", verificationIds: [verificationId],
   });
   assert.equal(promote.status, 200, `转正失败：${JSON.stringify(promote.data)}`);
   assert.equal(promote.data.promoted, 1);
@@ -189,17 +201,22 @@ try {
   assert.equal(promotedPackage.status, "OFFICIAL");
   assert.equal(finalPayload.data.promoteCandidates.length, 0);
   assert.equal(finalPayload.data.barcodeLedger[0].promoted, true, "条码台账应反映已转正");
+  const afterPromoteUpdate = await call("PATCH", `/api/projects/${projectId}/package-verifications/${verificationId}`, {
+    action: "update", processUrl: "https://flow.example.com/e2e-3",
+  });
+  assert.equal(afterPromoteUpdate.status, 409, "转正后不允许再修改转验证信息");
   step("验证通过后转正，正式版本号更新");
 
   // 10. 历史
   const history = await call("GET", `/api/projects/${projectId}/packages/${packageId}`);
   assert.equal(history.status, 200, `读取历史失败：${JSON.stringify(history.data)}`);
   const types = history.data.events.map((event) => event.type);
-  for (const type of ["REQUEST", "BATCH", "CONCLUSION", "BARCODES", "PROMOTE"]) {
+  for (const type of ["REQUEST", "BATCH", "VERIFICATION", "CONCLUSION", "PROMOTE"]) {
     assert.ok(types.includes(type), `历史应包含 ${type}，实际 ${types.join(",")}`);
   }
   assert.equal(history.data.package.officialVersion, "1.1");
-  step("历史记录包含申请、批次、结论、条码与转正");
+  assert.ok(history.data.events.some((event) => event.processUrl), "历史应保留电子流程链接");
+  step("历史记录包含申请、批次、转验证处理、结论与转正");
 
   // 11. 软件经理角色：可提交任意责任组的包并组织批次
   const added = await call("POST", `/api/projects/${projectId}/members`, { employeeNo: "c00000004" });

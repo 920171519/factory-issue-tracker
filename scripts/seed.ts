@@ -11,9 +11,11 @@ import {
 import { createCategory, listTimeSlotViews, saveHost, setDefaultGroups, createCode } from "../lib/taxonomy";
 import {
   concludeItem,
+  concludeVerification,
   createBatch,
   createPackage,
   createRequest,
+  handleVerification,
   setTesterGroup,
   updatePackage,
 } from "../lib/packages";
@@ -95,30 +97,87 @@ async function seedPackageDemo(
   ensureProjectMember(projectId, ids.pm, ids.softwareManager);
   updateProjectMemberRoles(projectId, ids.pm, ids.softwareManager, { isPm: false, isSupervisor: false, isSoftwareManager: true });
 
-  // 历史编码补责任组（编码清单已迁移为软件包管理）
-  const legacy = db.prepare("SELECT id, code FROM code_list WHERE project_id = ?").all(projectId) as { id: string; code: string }[];
-  for (const row of legacy) {
-    if (row.code === "XH-SYS-PCB-A01") updatePackage(projectId, row.id, ids.pm, { groupId: groups.cpu, ownerId: ids.cpuLeader });
-    if (row.code === "XH-FAN-4020") updatePackage(projectId, row.id, ids.pm, { groupId: groups.fan, ownerId: ids.fanLeader });
-    if (row.code === "XH-PSU-1600") updatePackage(projectId, row.id, ids.pm, { groupId: groups.repair, ownerId: ids.repairLeader });
+  // 问题分类即「问题归属节点」：演示项目使用节点命名，软件包挂到对应节点。
+  const nodeRenames: [string, string][] = [
+    ["CPU 异常", "CPU 测试节点"],
+    ["风扇异常", "风扇测试节点"],
+    ["电源异常", "电源测试节点"],
+    ["结构异常", "整机结构节点"],
+  ];
+  for (const [from, to] of nodeRenames) {
+    const category = db.prepare("SELECT id FROM categories WHERE project_id = ? AND name = ?").get(projectId, from) as
+      | { id: string }
+      | undefined;
+    if (category) db.prepare("UPDATE categories SET name = ? WHERE id = ?").run(to, category.id);
+  }
+  function nodeId(name: string): string | null {
+    const row = db.prepare("SELECT id FROM categories WHERE project_id = ? AND name = ?").get(projectId, name) as
+      | { id: string }
+      | undefined;
+    return row?.id || null;
   }
 
-  function ensurePackage(code: string, description: string, version: string, groupId: string, ownerId: string): string {
+  // 历史编码补责任组与归属节点（编码清单已迁移为软件包管理）
+  const legacy = db.prepare("SELECT id, code FROM code_list WHERE project_id = ?").all(projectId) as { id: string; code: string }[];
+  for (const row of legacy) {
+    if (row.code === "XH-SYS-PCB-A01") {
+      updatePackage(projectId, row.id, ids.pm, {
+        groupId: groups.cpu,
+        ownerId: ids.cpuLeader,
+        nodeId: nodeId("整机结构节点"),
+        usageNote: "星河服务器 NPI · 整机结构与主板装配",
+      });
+    }
+    if (row.code === "XH-FAN-4020") {
+      updatePackage(projectId, row.id, ids.pm, {
+        groupId: groups.fan,
+        ownerId: ids.fanLeader,
+        nodeId: nodeId("风扇测试节点"),
+        usageNote: "星河服务器 NPI · 风扇与散热测试",
+      });
+    }
+    if (row.code === "XH-PSU-1600") {
+      updatePackage(projectId, row.id, ids.pm, {
+        groupId: groups.repair,
+        ownerId: ids.repairLeader,
+        nodeId: nodeId("电源测试节点"),
+        usageNote: "星河服务器 NPI · 电源与掉电测试",
+      });
+    }
+  }
+
+  function ensurePackage(
+    code: string,
+    description: string,
+    version: string,
+    groupId: string,
+    ownerId: string,
+    node: string,
+    usageNote: string,
+  ): string {
     const existing = db.prepare("SELECT id FROM code_list WHERE project_id = ? AND code = ?").get(projectId, code) as
       | { id: string }
       | undefined;
+    const nodeValue = nodeId(node);
     if (existing) {
-      updatePackage(projectId, existing.id, ids.pm, { groupId, ownerId });
+      updatePackage(projectId, existing.id, ids.pm, { groupId, ownerId, nodeId: nodeValue, usageNote });
       return existing.id;
     }
-    return createPackage(projectId, ids.pm, { code, description, version, groupId, ownerId }).id;
+    return createPackage(projectId, ids.pm, {
+      code,
+      description,
+      version,
+      groupId,
+      ownerId,
+      nodeId: nodeValue,
+      usageNote,
+    }).id;
   }
 
-  const bios = ensurePackage("XH-BIOS-FW", "服务器 BIOS 固件", "Rev.B2", groups.cpu, ids.cpuLeader);
-  const bmc = ensurePackage("XH-BMC-FW", "BMC 管理固件", "V1.4", groups.fan, ids.fanLeader);
-  const cpld = ensurePackage("XH-CPLD-LOGIC", "CPLD 逻辑固件", "V2.1", groups.retest, ids.retestLeader);
-
-  const board = ensurePackage("XH-SYS-PCB-A01", "整机主板组件编码", "Rev.B2", groups.cpu, ids.cpuLeader);
+  const bios = ensurePackage("XH-BIOS-FW", "服务器 BIOS 固件", "Rev.B2", groups.cpu, ids.cpuLeader, "CPU 测试节点", "星河服务器 NPI · 整机功能测试");
+  const bmc = ensurePackage("XH-BMC-FW", "BMC 管理固件", "V1.4", groups.fan, ids.fanLeader, "风扇测试节点", "星河服务器 NPI · 风扇与散热测试");
+  const cpld = ensurePackage("XH-CPLD-LOGIC", "CPLD 逻辑固件", "V2.1", groups.retest, ids.retestLeader, "整机结构节点", "星河服务器 NPI · 上电时序与整机结构");
+  const board = ensurePackage("XH-SYS-PCB-A01", "整机主板组件编码", "Rev.B2", groups.cpu, ids.cpuLeader, "整机结构节点", "星河服务器 NPI · 整机结构与主板装配");
 
   const batchCount = db
     .prepare("SELECT COUNT(*) AS count FROM package_batches WHERE project_id = ? AND kind = 'TEST'")
@@ -184,21 +243,23 @@ async function seedPackageDemo(
     packageUrl: "\\\\share\\release\\XH-SYS-PCB-A01\\Rev.B3",
     sourceItemId: boardTestItem.id,
   });
-  const verifyBatch = createBatch(projectId, ids.pm, {
-    kind: "VERIFY",
-    requestIds: [verifyRequest.id],
-    title: "11 月第一次转验证",
-    scheduledDate: todayLocal(),
-    note: "正式服务器 A-01 验证主板 Rev.B3。",
-    barcodes: [{ requestId: verifyRequest.id, barcodes: ["XH-CPU-2601001", "XH-MIX-2601003"] }],
+  // 转验证逐包处理：软件经理填写电子流程链接与验证条码，测试组给出验证结论。
+  const verification = handleVerification(projectId, ids.softwareManager, {
+    requestId: verifyRequest.id,
+    processUrl: "https://flow.example.com/flow/BIOS-REV-B3",
+    barcodes: ["XH-CPU-2601001", "XH-MIX-2601003"],
   });
-  const verifyItem = db
-    .prepare("SELECT id FROM package_batch_items WHERE batch_id = ? AND package_id = ?")
-    .get(verifyBatch.batchId, board) as { id: string } | undefined;
-  if (!verifyItem) throw new Error("演示验证条目缺失");
-  concludeItem(projectId, verifyBatch.batchId, verifyItem.id, ids.retestLeader, {
+  concludeVerification(projectId, ids.retestLeader, verification.verificationId, {
     conclusion: "PASS",
     note: "正式服务器条码 XH-CPU-2601001 与 XH-MIX-2601003 连续运行 48 小时无异常，可转正。",
+  });
+
+  // 另一条已测试通过、等待软件经理处理的转验证申请（演示逐包处理入口）。
+  createRequest(projectId, ids.cpuMember, {
+    kind: "VERIFY",
+    packageId: bios,
+    version: "Rev.C1",
+    sourceItemId: biosTestItem.id,
   });
 
   // 第二次转测：CPLD 已组织但尚未出结论，用于演示「在测跟踪」跨批次视图。

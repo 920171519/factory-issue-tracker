@@ -649,6 +649,7 @@ ul, ol { margin: 0; }
 .packages-matrix td { font-size: 11px; }
 .packages-matrix .main-cell { white-space: nowrap; }
 .packages-matrix .chip { white-space: nowrap; }
+.packages-matrix .link { white-space: nowrap; }
 .packages-matrix th:last-child, .packages-matrix td:last-child { min-width: 92px; }
 .barcode-cell { min-width: 235px; }
 .barcode-editor { display: flex; flex-direction: column; gap: 5px; }

@@ -1,12 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BadgeCheck, Barcode, ChevronDown, ChevronUp, Clock, ShieldCheck, Undo2 } from "lucide-react";
-import type { BatchItemView, PackagesPayload } from "@/lib/packages";
+import { BadgeCheck, Barcode, ExternalLink, FileText, ShieldCheck, Undo2 } from "lucide-react";
+import type { BatchItemView, PackagesPayload, RequestView, VerificationView } from "@/lib/packages";
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import { useToast } from "@/components/Toast";
-import { BarcodeEditor, ChangeFlag, ConclusionBadge, ConclusionModal, EmptyHint, VersionText } from "@/components/packages/shared";
-import { OrganizeBatchModal } from "@/components/packages/TestFlow";
+import { Modal } from "@/components/Modal";
+import { ConclusionBadge, ConclusionModal, EmptyHint, VersionText } from "@/components/packages/shared";
 import { RequestModal } from "@/components/packages/RequestModal";
 import { formatDateTime } from "@/lib/time";
 
@@ -22,26 +22,21 @@ export function VerifyFlow({
   onChanged: () => Promise<void>;
 }) {
   const toast = useToast();
-  const { permissions, verifyRequestCandidates, pendingVerifyRequests, verifyBatches } = payload;
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [organizing, setOrganizing] = useState(false);
+  const { permissions, verifyRequestCandidates, pendingVerifyRequests, verifications } = payload;
   const [requestSource, setRequestSource] = useState<BatchItemView | null>(null);
-  const [concluding, setConcluding] = useState<{ batchId: string; item: BatchItemView } | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(verifyBatches[0] ? [verifyBatches[0].id] : []));
-  const [barcodeDraft, setBarcodeDraft] = useState<Record<string, string[]>>({});
+  const [handlingRequest, setHandlingRequest] = useState<RequestView | null>(null);
+  const [editingVerification, setEditingVerification] = useState<VerificationView | null>(null);
+  const [concluding, setConcluding] = useState<VerificationView | null>(null);
   const [promotedPick, setPromotedPick] = useState<Set<string>>(new Set());
   const [barcodeSearch, setBarcodeSearch] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const selectableIds = pendingVerifyRequests.map((request) => request.id);
-  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
 
   const candidates = useMemo(() => verifyRequestCandidates, [verifyRequestCandidates]);
   const ledgerEntries = useMemo(() => {
     const keyword = barcodeSearch.trim().toLowerCase();
     if (!keyword) return payload.barcodeLedger;
     return payload.barcodeLedger.filter((entry) =>
-      `${entry.barcode} ${entry.packageCode} ${entry.version || ""} ${entry.batchCode}`.toLowerCase().includes(keyword),
+      `${entry.barcode} ${entry.packageCode} ${entry.version || ""} ${entry.processUrl || ""}`.toLowerCase().includes(keyword),
     );
   }, [payload.barcodeLedger, barcodeSearch]);
 
@@ -51,22 +46,8 @@ export function VerifyFlow({
     return item.submittedById === currentUserId;
   }
 
-  function toggle(id: string) {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleBatch(batchId: string) {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(batchId)) next.delete(batchId);
-      else next.add(batchId);
-      return next;
-    });
+  function canCancel(request: RequestView): boolean {
+    return permissions.isPm || permissions.isSupervisor || request.submittedBy === currentUserId;
   }
 
   async function cancelRequest(requestId: string) {
@@ -85,37 +66,14 @@ export function VerifyFlow({
     }
   }
 
-  async function saveBarcodes(batchId: string, item: BatchItemView) {
-    const barcodes = barcodeDraft[item.id] ?? item.barcodes;
+  async function promote(verificationIds: string[]) {
+    if (verificationIds.length === 0) return;
+    if (!window.confirm(`确认将选中的 ${verificationIds.length} 个软件包转为正式版本？正式版本号会被更新，操作记录在历史中。`)) return;
     setBusy(true);
     try {
-      await apiFetch(`/api/projects/${projectId}/package-batches/${batchId}`, {
+      const result = await apiFetch<{ promoted: number }>(`/api/projects/${projectId}/package-verifications`, {
         method: "PATCH",
-        body: JSON.stringify({ action: "barcodes", itemId: item.id, barcodes }),
-      });
-      toast.success(`${item.packageCode} 的验证条码已保存`);
-      setBarcodeDraft((current) => {
-        const next = { ...current };
-        delete next[item.id];
-        return next;
-      });
-      await onChanged();
-    } catch (saveError) {
-      toast.error(errorMessage(saveError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function promote(batchId: string) {
-    const itemIds = [...promotedPick];
-    if (itemIds.length === 0) return;
-    if (!window.confirm(`确认将选中的 ${itemIds.length} 个软件包转为正式版本？正式版本号将被更新，操作会记录在历史中。`)) return;
-    setBusy(true);
-    try {
-      const result = await apiFetch<{ promoted: number }>(`/api/projects/${projectId}/package-batches/${batchId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ action: "promote", itemIds }),
+        body: JSON.stringify({ action: "promote", verificationIds }),
       });
       toast.success(`已将 ${result.promoted} 个软件包转为正式版本`);
       setPromotedPick(new Set());
@@ -142,7 +100,7 @@ export function VerifyFlow({
         <div className="card-header">
           <div>
             <h2 className="section-title">测试通过 · 待提交转验证</h2>
-            <div className="section-sub">测试结论为「通过」的转测记录可提交转验证申请；提交人默认为原转测申请人，责任组负责人与 PM/主管也可提交。</div>
+            <div className="section-sub">测试结论为「通过」的转测记录可提交转验证申请；提交人默认为原转测申请人，该包责任组成员与 PM/主管/软件经理也可提交。</div>
           </div>
           <span className="badge badge-outline">{candidates.length} 个可申请</span>
         </div>
@@ -189,33 +147,15 @@ export function VerifyFlow({
       <div className="card">
         <div className="card-header">
           <div>
-            <h2 className="section-title">待组织转验证的申请</h2>
-            <div className="section-sub">负责人勾选后统一组织为转验证批次，进入正式服务器验证；每个软件包可绑定多个验证条码。</div>
+            <h2 className="section-title">待处理的转验证申请</h2>
+            <div className="section-sub">软件经理、项目 PM、项目主管逐包处理：填写电子流程链接与验证条码后，该包进入正式服务器验证。</div>
           </div>
-          <div className="header-actions">
-            <span className="badge badge-outline">{pendingVerifyRequests.length} 个待组织</span>
-            {permissions.canOrganize ? (
-              <button type="button" className="btn btn-primary" disabled={selected.size === 0} onClick={() => setOrganizing(true)}>
-                <BadgeCheck size={14} /> 组织转验证{selected.size ? `（${selected.size}）` : ""}
-              </button>
-            ) : null}
-          </div>
+          <span className="badge badge-outline">{pendingVerifyRequests.length} 个待处理</span>
         </div>
         <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
-                {permissions.canOrganize ? (
-                  <th className="check-cell">
-                    <input
-                      type="checkbox"
-                      className="issue-check"
-                      checked={allSelected}
-                      onChange={(event) => setSelected(event.target.checked ? new Set(selectableIds) : new Set())}
-                      aria-label="全选待组织验证申请"
-                    />
-                  </th>
-                ) : null}
                 <th>软件包</th>
                 <th>责任组</th>
                 <th>申请版本</th>
@@ -227,14 +167,9 @@ export function VerifyFlow({
             </thead>
             <tbody>
               {pendingVerifyRequests.length === 0 ? (
-                <tr><td colSpan={permissions.canOrganize ? 8 : 7}><EmptyHint title="暂无待组织的转验证申请" description="在上一节选择测试通过的软件包提交转验证申请。" /></td></tr>
+                <tr><td colSpan={7}><EmptyHint title="暂无待处理的转验证申请" description="在上一节选择测试通过的软件包提交转验证申请。" /></td></tr>
               ) : pendingVerifyRequests.map((request) => (
                 <tr key={request.id}>
-                  {permissions.canOrganize ? (
-                    <td className="check-cell">
-                      <input type="checkbox" className="issue-check" checked={selected.has(request.id)} onChange={() => toggle(request.id)} aria-label={`选择 ${request.packageCode}`} />
-                    </td>
-                  ) : null}
                   <td><div className="main-cell mono">{request.packageCode}</div></td>
                   <td>{request.groupName ? <span className="chip">{request.groupName}</span> : <span className="hint">未分配</span>}</td>
                   <td><VersionText value={request.version} /></td>
@@ -242,9 +177,18 @@ export function VerifyFlow({
                   <td>{request.submittedByName}</td>
                   <td className="mini-meta mono">{formatDateTime(request.submittedAt, { seconds: true })}</td>
                   <td className="actions">
-                    <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void cancelRequest(request.id)}>
-                      <Undo2 size={12} /> 撤回
-                    </button>
+                    <div className="row" style={{ justifyContent: "flex-end", gap: 4 }}>
+                      {canCancel(request) ? (
+                        <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void cancelRequest(request.id)}>
+                          <Undo2 size={12} /> 撤回
+                        </button>
+                      ) : null}
+                      {permissions.canHandleVerification ? (
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => setHandlingRequest(request)}>
+                          处理
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -256,132 +200,107 @@ export function VerifyFlow({
       <div className="card">
         <div className="card-header">
           <div>
-            <h2 className="section-title">转验证批次 · 正式服务器验证</h2>
-            <div className="section-sub">为每个软件包绑定验证条码并给出验证结论；验证通过后可勾选转正，正式版本号会同步更新并写入历史。</div>
+            <h2 className="section-title">转验证记录（逐包）</h2>
+            <div className="section-sub">每个软件包单独验证：电子流程链接 + 验证条码 + 验证结论；验证通过后可转正，正式版本号同步更新。</div>
           </div>
-          <span className="badge badge-outline">{verifyBatches.length} 批</span>
+          <div className="header-actions">
+            <span className="badge badge-outline">{verifications.length} 个记录</span>
+            {permissions.canPromote ? (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={busy || promotedPick.size === 0}
+                onClick={() => void promote([...promotedPick])}
+              >
+                <ShieldCheck size={13} /> 转正所选{promotedPick.size ? `（${promotedPick.size}）` : ""}
+              </button>
+            ) : null}
+          </div>
         </div>
-        <div className="batch-list">
-          {verifyBatches.length === 0 ? (
-            <EmptyHint title="还没有转验证批次" description="测试通过并提交转验证申请后，由负责人组织第一批转验证。" />
-          ) : verifyBatches.map((batch) => {
-            const open = expanded.has(batch.id);
-            const promotable = batch.items.filter((item) => item.conclusion === "PASS" && !item.promoted);
-            return (
-              <div key={batch.id} className={`batch-card ${open ? "open" : ""}`}>
-                <div className="batch-head-row">
-                  <button type="button" className="batch-head" onClick={() => toggleBatch(batch.id)} aria-expanded={open}>
-                    <span className="batch-code mono">{batch.code}</span>
-                    <span className="batch-title">{batch.title || "转验证批次"}</span>
-                    <span className="batch-meta"><Clock size={12} /> 组织 {formatDateTime(batch.createdAt, { seconds: true })} · {batch.createdByName}</span>
-                    <span className={`badge ${batch.status === "DONE" ? "badge-green" : "badge-blue"}`}>
-                      {batch.status === "DONE" ? "已验证" : `待结论 ${batch.summary.pending}`}
-                    </span>
-                    <span className="batch-stats">
-                      验证 {batch.transferredCount} · 通过 {batch.summary.pass} · 不通过 {batch.summary.fail} · 有条件 {batch.summary.conditional}
-                    </span>
-                    {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-                  </button>
-                  {permissions.canPromote ? (
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      disabled={busy || promotedPick.size === 0}
-                      onClick={() => void promote(batch.id)}
-                    >
-                      <ShieldCheck size={13} /> 转正所选{promotedPick.size ? `（${promotedPick.size}）` : ""}
-                    </button>
-                  ) : null}
-                </div>
-                {open ? (
-                  <div className="table-wrap">
-                    <table className="table packages-matrix">
-                      <thead>
-                        <tr>
-                          <th>软件包</th>
-                          <th>责任组</th>
-                          <th>版本</th>
-                          <th>较正式</th>
-                          <th>验证条码</th>
-                          <th>验证结论</th>
-                          <th>转正</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {batch.items.map((item) => {
-                          const draft = barcodeDraft[item.id];
-                          const edited = Array.isArray(draft);
-                          const canPromoteRow = permissions.canPromote && item.conclusion === "PASS" && !item.promoted;
-                          return (
-                            <tr key={item.id}>
-                              <td>
-                                <div className="main-cell mono">{item.packageCode}</div>
-                                {item.changeSummary ? <div className="cell-sub wrap-cell">{item.changeSummary}</div> : null}
-                              </td>
-                              <td>{item.groupName ? <span className="chip">{item.groupName}</span> : <span className="hint">未分配</span>}</td>
-                              <td><VersionText value={item.version} /></td>
-                              <td><ChangeFlag changed={item.updatedVsOfficial} title={`正式版本：${item.officialVersion || "—"}`} /></td>
-                              <td className="barcode-cell">
-                                <BarcodeEditor
-                                  value={edited ? draft : item.barcodes}
-                                  disabled={!permissions.canConclude && !permissions.canOrganize}
-                                  onChange={(next) => setBarcodeDraft((current) => ({ ...current, [item.id]: next }))}
-                                />
-                                {edited ? (
-                                  <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => void saveBarcodes(batch.id, item)}>
-                                    保存条码
-                                  </button>
-                                ) : null}
-                              </td>
-                              <td>
-                                <div className="conclusion-cell">
-                                  <ConclusionBadge conclusion={item.conclusion} />
-                                  {item.conclusionNote ? <div className="cell-sub">{item.conclusionNote}</div> : null}
-                                  {item.concludedByName ? <div className="cell-sub">by {item.concludedByName}</div> : null}
-                                  {permissions.canConclude ? (
-                                    <button
-                                      type="button"
-                                      className="btn btn-secondary btn-sm"
-                                      onClick={() => setConcluding({ batchId: batch.id, item })}
-                                    >
-                                      {item.conclusion === "PENDING" ? "录入结论" : "修改结论"}
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </td>
-                              <td>
-                                {item.promoted ? (
-                                  <span className="badge badge-green">已转正</span>
-                                ) : canPromoteRow ? (
-                                  <label className="promote-check">
-                                    <input
-                                      type="checkbox"
-                                      className="issue-check"
-                                      checked={promotedPick.has(item.id)}
-                                      onChange={() => togglePromote(item.id)}
-                                      aria-label={`选择转正 ${item.packageCode}`}
-                                    />
-                                    待转正
-                                  </label>
-                                ) : (
-                                  <span className="hint">{item.conclusion === "PASS" ? "—" : "需验证通过"}</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {promotable.length > 0 && permissions.canPromote ? (
-                      <div className="batch-foot-hint">
-                        本批有 {promotable.length} 个软件包验证通过待转正：{promotable.map((item) => item.packageCode).join("、")}
+        <div className="table-wrap">
+          <table className="table packages-matrix">
+            <thead>
+              <tr>
+                <th>软件包</th>
+                <th>责任组</th>
+                <th>验证版本</th>
+                <th>电子流程</th>
+                <th>验证条码</th>
+                <th>验证结论</th>
+                <th>处理 / 结论人</th>
+                <th>转正</th>
+              </tr>
+            </thead>
+            <tbody>
+              {verifications.length === 0 ? (
+                <tr><td colSpan={8}><EmptyHint title="还没有转验证记录" description="软件经理处理「待处理的转验证申请」后，会在这里生成逐包验证记录。" /></td></tr>
+              ) : verifications.map((verification) => {
+                const canPromoteRow = permissions.canPromote && verification.conclusion === "PASS" && !verification.promoted;
+                return (
+                  <tr key={verification.id}>
+                    <td>
+                      <div className="main-cell mono">{verification.packageCode}</div>
+                      {verification.packageName && verification.packageName !== verification.packageCode ? <div className="cell-sub">{verification.packageName}</div> : null}
+                    </td>
+                    <td>{verification.groupName ? <span className="chip">{verification.groupName}</span> : <span className="hint">未分配</span>}</td>
+                    <td><VersionText value={verification.version} /></td>
+                    <td>
+                      {verification.processUrl ? (
+                        <a className="link" href={verification.processUrl} target="_blank" rel="noreferrer"><FileText size={12} /> 电子流程</a>
+                      ) : (
+                        <span className="hint">未填写</span>
+                      )}
+                      {permissions.canHandleVerification && !verification.promoted ? (
+                        <div><button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingVerification(verification)}>编辑</button></div>
+                      ) : null}
+                    </td>
+                    <td className="barcode-cell">
+                      {verification.barcodes.length === 0 ? <span className="hint">—</span> : (
+                        <div className="chip-list">
+                          {verification.barcodes.map((barcode) => <span key={barcode} className="chip mono">{barcode}</span>)}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <div className="conclusion-cell">
+                        <ConclusionBadge conclusion={verification.conclusion} />
+                        {verification.conclusionNote ? <div className="cell-sub">{verification.conclusionNote}</div> : null}
+                        {permissions.canConclude && !verification.promoted ? (
+                          <button type="button" className="btn btn-secondary btn-sm" onClick={() => setConcluding(verification)}>
+                            {verification.conclusion === "PENDING" ? "录入结论" : "修改结论"}
+                          </button>
+                        ) : null}
                       </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
+                    </td>
+                    <td className="mini-meta">
+                      {verification.handledByName ? <div>处理：{verification.handledByName}</div> : null}
+                      {verification.handledAt ? <div className="mono">{formatDateTime(verification.handledAt, { seconds: true })}</div> : null}
+                      {verification.concludedByName ? <div>结论：{verification.concludedByName}</div> : null}
+                      {verification.concludedAt ? <div className="mono">{formatDateTime(verification.concludedAt, { seconds: true })}</div> : null}
+                    </td>
+                    <td>
+                      {verification.promoted ? (
+                        <span className="badge badge-green">已转正</span>
+                      ) : canPromoteRow ? (
+                        <label className="promote-check">
+                          <input
+                            type="checkbox"
+                            className="issue-check"
+                            checked={promotedPick.has(verification.id)}
+                            onChange={() => togglePromote(verification.id)}
+                            aria-label={`选择转正 ${verification.packageCode}`}
+                          />
+                          待转正
+                        </label>
+                      ) : (
+                        <span className="hint">{verification.conclusion === "PASS" ? "—" : "需验证通过"}</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -389,7 +308,7 @@ export function VerifyFlow({
         <div className="card-header">
           <div>
             <h2 className="section-title"><Barcode size={14} style={{ verticalAlign: "-2px" }} /> 验证条码台账</h2>
-            <div className="section-sub">按条码查看所属软件包、验证批次与验证结论，便于用条码跟踪是否验证通过。</div>
+            <div className="section-sub">按条码查看所属软件包、电子流程与验证结论，便于用条码跟踪是否验证通过。</div>
           </div>
           <div className="header-actions">
             <input
@@ -397,7 +316,7 @@ export function VerifyFlow({
               style={{ maxWidth: 240 }}
               value={barcodeSearch}
               onChange={(event) => setBarcodeSearch(event.target.value)}
-              placeholder="搜索条码 / 软件包 / 批次"
+              placeholder="搜索条码 / 软件包"
               aria-label="搜索验证条码"
             />
             <span className="badge badge-outline">{ledgerEntries.length} 条条码</span>
@@ -411,7 +330,7 @@ export function VerifyFlow({
                 <th>软件包</th>
                 <th>责任组</th>
                 <th>验证版本</th>
-                <th>验证批次</th>
+                <th>电子流程</th>
                 <th>验证结论</th>
                 <th>结论时间</th>
                 <th>转正</th>
@@ -419,9 +338,9 @@ export function VerifyFlow({
             </thead>
             <tbody>
               {ledgerEntries.length === 0 ? (
-                <tr><td colSpan={8}><EmptyHint title="暂无验证条码" description="组织转验证批次时需要为每个软件包填写验证条码。" /></td></tr>
+                <tr><td colSpan={8}><EmptyHint title="暂无验证条码" description="软件经理处理转验证申请时需要为每个软件包填写验证条码。" /></td></tr>
               ) : ledgerEntries.map((entry) => (
-                <tr key={`${entry.batchId}-${entry.packageId}-${entry.barcode}`}>
+                <tr key={`${entry.verificationId}-${entry.barcode}`}>
                   <td className="main-cell mono">{entry.barcode}</td>
                   <td>
                     <div className="mono">{entry.packageCode}</div>
@@ -429,7 +348,7 @@ export function VerifyFlow({
                   </td>
                   <td>{entry.groupName ? <span className="chip">{entry.groupName}</span> : <span className="hint">未分配</span>}</td>
                   <td><VersionText value={entry.version} /></td>
-                  <td className="mono">{entry.batchCode}</td>
+                  <td>{entry.processUrl ? <a className="link" href={entry.processUrl} target="_blank" rel="noreferrer"><ExternalLink size={12} /> 打开</a> : <span className="hint">—</span>}</td>
                   <td><ConclusionBadge conclusion={entry.conclusion} /></td>
                   <td className="mini-meta mono">{formatDateTime(entry.concludedAt, { seconds: true })}</td>
                   <td>{entry.promoted ? <span className="badge badge-green">已转正</span> : <span className="hint">—</span>}</td>
@@ -449,22 +368,33 @@ export function VerifyFlow({
           onClose={() => setRequestSource(null)}
           onCreated={async () => {
             setRequestSource(null);
-            toast.success("转验证申请已提交，等待负责人组织验证");
+            toast.success("转验证申请已提交，等待软件经理处理");
             await onChanged();
           }}
         />
       ) : null}
 
-      {organizing ? (
-        <OrganizeBatchModal
+      {handlingRequest ? (
+        <VerificationModal
           projectId={projectId}
-          kind="VERIFY"
-          requests={pendingVerifyRequests.filter((request) => selected.has(request.id))}
-          onClose={() => setOrganizing(false)}
-          onCreated={async (code) => {
-            setOrganizing(false);
-            setSelected(new Set());
-            toast.success(`已组织转验证批次 ${code}`);
+          request={handlingRequest}
+          onClose={() => setHandlingRequest(null)}
+          onSaved={async () => {
+            setHandlingRequest(null);
+            toast.success(`${handlingRequest.packageCode} 已进入正式服务器验证`);
+            await onChanged();
+          }}
+        />
+      ) : null}
+
+      {editingVerification ? (
+        <VerificationModal
+          projectId={projectId}
+          verification={editingVerification}
+          onClose={() => setEditingVerification(null)}
+          onSaved={async () => {
+            setEditingVerification(null);
+            toast.success("转验证信息已更新");
             await onChanged();
           }}
         />
@@ -472,10 +402,21 @@ export function VerifyFlow({
 
       {concluding ? (
         <ConclusionModal
-          projectId={projectId}
-          batchId={concluding.batchId}
           kind="VERIFY"
-          item={concluding.item}
+          item={{
+            id: concluding.id,
+            packageCode: concluding.packageCode,
+            version: concluding.version,
+            officialVersion: concluding.officialVersion,
+            conclusion: concluding.conclusion,
+            conclusionNote: concluding.conclusionNote,
+          }}
+          submit={async (conclusion, note) => {
+            await apiFetch(`/api/projects/${projectId}/package-verifications/${concluding.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ action: "conclude", conclusion, note }),
+            });
+          }}
           onClose={() => setConcluding(null)}
           onSaved={async () => {
             setConcluding(null);
@@ -485,5 +426,97 @@ export function VerifyFlow({
         />
       ) : null}
     </section>
+  );
+}
+
+/** 处理 / 编辑逐包转验证：填写电子流程链接与验证条码。 */
+function VerificationModal({
+  projectId,
+  request,
+  verification,
+  onClose,
+  onSaved,
+}: {
+  projectId: string;
+  request?: RequestView;
+  verification?: VerificationView;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [processUrl, setProcessUrl] = useState(verification?.processUrl || "");
+  const [barcodes, setBarcodes] = useState((verification?.barcodes || []).join(","));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const packageCode = request?.packageCode || verification?.packageCode || "";
+  const version = request?.version || verification?.version || "";
+
+  function parseBarcodes(value: string): string[] {
+    return [...new Set(value.split(/[\s,，;；]+/).map((entry) => entry.trim()).filter(Boolean))];
+  }
+
+  async function submit() {
+    setError("");
+    const codes = parseBarcodes(barcodes);
+    if (!processUrl.trim()) {
+      setError("请填写电子流程链接");
+      return;
+    }
+    if (codes.length === 0) {
+      setError("请填写至少一个验证条码");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (request) {
+        await apiFetch(`/api/projects/${projectId}/package-verifications`, {
+          method: "POST",
+          body: JSON.stringify({ requestId: request.id, processUrl: processUrl.trim(), barcodes: codes }),
+        });
+      } else if (verification) {
+        await apiFetch(`/api/projects/${projectId}/package-verifications/${verification.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ action: "update", processUrl: processUrl.trim(), barcodes: codes }),
+        });
+      }
+      await onSaved();
+    } catch (submitError) {
+      setError(errorMessage(submitError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={request ? `处理转验证 · ${packageCode}` : `编辑转验证 · ${packageCode}`}
+      description={`版本 ${version || "—"}${request ? " · 处理后将进入正式服务器验证" : ""}`}
+      size="md"
+      onClose={onClose}
+      footer={(
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>取消</button>
+          <button type="button" className="btn btn-primary" onClick={() => void submit()} disabled={busy || !processUrl.trim() || parseBarcodes(barcodes).length === 0}>
+            {busy ? "保存中…" : request ? "确认进入验证" : "保存"}
+          </button>
+        </>
+      )}
+    >
+      {error ? <div className="alert alert-error">{error}</div> : null}
+      <div className="field">
+        <label>电子流程链接（必填）</label>
+        <input className="input mono" value={processUrl} onChange={(event) => setProcessUrl(event.target.value)} maxLength={500} placeholder="https://flow.example.com/xxx 或 \\\\share\\流程单号" />
+        <div className="field-hint">用于跟踪该软件包转验证 / 转正的电子流程单据，转正时会一并保留。</div>
+      </div>
+      <div className="field" style={{ marginTop: 10 }}>
+        <label>验证条码（必填，多个用逗号分隔）</label>
+        <input className="input mono" value={barcodes} onChange={(event) => setBarcodes(event.target.value)} placeholder="XH-CPU-2601001,XH-MIX-2601003" aria-label="验证条码" />
+        <div className="field-hint">绑定用于正式服务器验证的条码，可在「验证条码台账」中按条码跟踪验证结论。</div>
+      </div>
+      {request?.changeSummary ? (
+        <div className="callout-strip" style={{ marginTop: 12 }}>
+          <span><b>申请说明：</b>{request.changeSummary}</span>
+        </div>
+      ) : null}
+    </Modal>
   );
 }

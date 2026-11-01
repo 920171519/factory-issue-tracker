@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
+  Boxes,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -53,6 +55,7 @@ export function IssuesWorkspace({
   defaultGroupIds,
   statuses,
   categories,
+  nodePackages,
   initialBarcodeId,
   initialBarcodeLabel,
   initialOpenCreate,
@@ -324,9 +327,9 @@ export function IssuesWorkspace({
               </select>
             </div>
             <div className="field">
-              <label>问题分类</label>
+              <label>问题归属节点</label>
               <select className="select" value={filters.categoryId} onChange={(event) => applyFilter("categoryId", event.target.value)}>
-                <option value="">全部分类</option>
+                <option value="">全部节点</option>
                 {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
               </select>
             </div>
@@ -339,6 +342,33 @@ export function IssuesWorkspace({
                 <option value="LOW">低</option>
               </select>
             </div>
+          </div>
+        ) : null}
+        {filters.categoryId ? (
+          <div className="callout-strip node-package-hint" aria-label="该节点使用的软件包">
+            <Boxes size={14} />
+            <span>
+              节点「{categories.find((category) => category.id === filters.categoryId)?.name || "—"}」下使用的软件包：
+            </span>
+            {nodePackages.filter((pkg) => pkg.nodeId === filters.categoryId).length === 0 ? (
+              <span className="hint">暂未关联软件包</span>
+            ) : (
+              nodePackages
+                .filter((pkg) => pkg.nodeId === filters.categoryId)
+                .map((pkg) => (
+                  <Link
+                    key={pkg.id}
+                    className="chip mono"
+                    href={`/projects/${projectId}/packages?node=${filters.categoryId}`}
+                    title={pkg.name}
+                  >
+                    {pkg.code}
+                  </Link>
+                ))
+            )}
+            <Link className="link" href={`/projects/${projectId}/packages?node=${filters.categoryId}`}>
+              查看软件包
+            </Link>
           </div>
         ) : null}
       </section>

@@ -11,16 +11,16 @@ import { formatDateTime } from "@/lib/time";
 const EVENT_LABEL: Record<HistoryEvent["type"], string> = {
   REQUEST: "申请",
   BATCH: "批次",
+  VERIFICATION: "转验证",
   CONCLUSION: "结论",
-  BARCODES: "条码",
   PROMOTE: "转正",
 };
 
 const EVENT_TONE: Record<HistoryEvent["type"], string> = {
   REQUEST: "pkg-event-request",
   BATCH: "pkg-event-batch",
+  VERIFICATION: "pkg-event-barcode",
   CONCLUSION: "pkg-event-conclusion",
-  BARCODES: "pkg-event-barcode",
   PROMOTE: "pkg-event-promote",
 };
 
