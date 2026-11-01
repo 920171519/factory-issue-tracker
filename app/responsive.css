@@ -364,5 +364,7 @@
   .issue-tabbar-action span { display: none; }
   .issue-list-actions { align-items: flex-start; }
   .issue-list-actions .header-actions { width: 100%; }
+  .issues-toolbar-card { padding: 10px; }
+  .toolbar-target-hint { display: none; }
   .issue-detail-card .detail-content { padding: 14px; }
 }

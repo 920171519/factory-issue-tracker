@@ -135,20 +135,29 @@ export function IssuesWorkspace({
         const ids = row.groups.map((group) => group.id);
         return index === 0 ? ids : acc.filter((id) => ids.includes(id));
       }, []);
+  function scrollToTabTop() {
+    if (typeof window === "undefined") return;
+    window.setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 40);
+  }
+
+  /** 搜索与筛选只作用于条码列表：任何筛选动作都先切回第一个标签页。 */
+  function focusListTab() {
+    if (activeTab === LIST_TAB) return;
+    setActiveTab(LIST_TAB);
+    scrollToTabTop();
+  }
+
   function resetFilters() {
     setSearchDraft("");
     setFilters({ search: "", groupId: "", statusId: "", categoryId: "", priority: "" });
     setPage(1);
+    focusListTab();
   }
 
   function applyFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
     setPage(1);
-  }
-
-  function scrollToTabTop() {
-    if (typeof window === "undefined") return;
-    window.setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 40);
+    focusListTab();
   }
 
   function activateTab(id: string) {
@@ -244,9 +253,95 @@ export function IssuesWorkspace({
         <div>
           <div className="page-kicker">Issue Tracking</div>
           <h1 className="page-title">问题跟踪</h1>
-          <p className="page-sub">条码列表、搜索与筛选位于第一个标签页中。点击条码会在顶部新开一个详情标签页，可随时在两个标签页之间切换，无需上下滚动寻找列表。</p>
+          <p className="page-sub">条码列表固定为第一个标签页；搜索、筛选与录入入口统一位于标签页上方，点击筛选会自动回到条码列表。点击条码时在其后追加详情标签页，可随时切换，无需上下滚动寻找列表。</p>
         </div>
       </div>
+
+      {/* 搜索、筛选、录入入口统一位于标签页上方，作用于第一个标签页（条码列表）。 */}
+      <section className="card issues-toolbar-card" aria-label="条码列表工具栏">
+        <div className="issue-list-actions">
+          <div className="hint">
+            {data ? `共 ${data.total} 个条码 · 当前第 ${data.page} / ${data.pageCount} 页` : "正在加载条码…"}
+            <span className="toolbar-target-hint">· 搜索与筛选作用于「条码列表」标签页</span>
+          </div>
+          <div className="header-actions">
+            <a className="btn btn-secondary" href={`/api/projects/${projectId}/issues/template`} target="_blank" rel="noreferrer"><Download size={14} /> 下载模板</a>
+            <button type="button" className="btn btn-secondary" onClick={() => setImportOpen(true)}><Upload size={14} /> 批量导入</button>
+            <button type="button" className="btn btn-primary" onClick={() => setEntryOpen(true)}><Plus size={15} /> 录入问题</button>
+          </div>
+        </div>
+
+        <form
+          className="issue-toolbar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            applyFilter("search", searchDraft.trim());
+          }}
+        >
+          <div className="field search-field">
+            <div style={{ position: "relative" }}>
+              <Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--muted-2)" }} />
+              <input className="input" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索条码、库位号、云主机 IP…" style={{ paddingLeft: 33 }} />
+            </div>
+          </div>
+          <button type="submit" className="btn btn-secondary">搜索</button>
+          <button
+            type="button"
+            className={`btn ${activeFilters ? "btn-soft" : "btn-secondary"}`}
+            aria-expanded={filtersOpen}
+            onClick={() => { setFiltersOpen((open) => !open); focusListTab(); }}
+          >
+            <Filter size={14} /> 筛选 {activeFilters ? <span className="active-filter-count">{activeFilters}</span> : null}
+          </button>
+          {activeFilters ? <button type="button" className="btn btn-ghost" onClick={resetFilters}>清除筛选</button> : null}
+          <span className="spacer" />
+          <button type="button" className="icon-btn" onClick={() => void loadList()} title="刷新"><RefreshCw size={14} /></button>
+          <div className="field pagesize-select" style={{ minWidth: 98 }}>
+            <select
+              className="select"
+              value={pageSize}
+              onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); focusListTab(); }}
+              aria-label="每页显示数量"
+            >
+              {[10, 20, 50, 100].map((size) => <option key={size} value={size}>每页 {size}</option>)}
+            </select>
+          </div>
+        </form>
+        {filtersOpen ? (
+          <div className="filters-panel">
+            <div className="field">
+              <label>责任组</label>
+              <select className="select" value={filters.groupId} onChange={(event) => applyFilter("groupId", event.target.value)}>
+                <option value="">全部责任组</option>
+                {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>状态</label>
+              <select className="select" value={filters.statusId} onChange={(event) => applyFilter("statusId", event.target.value)}>
+                <option value="">全部状态</option>
+                {statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>问题分类</label>
+              <select className="select" value={filters.categoryId} onChange={(event) => applyFilter("categoryId", event.target.value)}>
+                <option value="">全部分类</option>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>优先级</label>
+              <select className="select" value={filters.priority} onChange={(event) => applyFilter("priority", event.target.value)}>
+                <option value="">全部优先级</option>
+                <option value="HIGH">高</option>
+                <option value="MEDIUM">中</option>
+                <option value="LOW">低</option>
+              </select>
+            </div>
+          </div>
+        ) : null}
+      </section>
 
       <div className="issue-main-tabs" role="tablist" aria-label="问题跟踪主标签页">
         <button
@@ -298,81 +393,6 @@ export function IssuesWorkspace({
         role="tabpanel"
         aria-label="条码列表"
       >
-        <div className="issue-list-actions">
-          <div className="hint">
-            {data ? `共 ${data.total} 个条码 · 当前第 ${data.page} / ${data.pageCount} 页` : "正在加载条码…"}
-          </div>
-          <div className="header-actions">
-            <a className="btn btn-secondary" href={`/api/projects/${projectId}/issues/template`} target="_blank" rel="noreferrer"><Download size={14} /> 下载模板</a>
-            <button type="button" className="btn btn-secondary" onClick={() => setImportOpen(true)}><Upload size={14} /> 批量导入</button>
-            <button type="button" className="btn btn-primary" onClick={() => setEntryOpen(true)}><Plus size={15} /> 录入问题</button>
-          </div>
-        </div>
-
-        <div className="card card-pad" style={{ paddingTop: 15, paddingBottom: filtersOpen ? 15 : 12 }}>
-          <form
-            className="issue-toolbar"
-            onSubmit={(event) => {
-              event.preventDefault();
-              applyFilter("search", searchDraft.trim());
-              setPage(1);
-            }}
-          >
-            <div className="field search-field">
-              <div style={{ position: "relative" }}>
-                <Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--muted-2)" }} />
-                <input className="input" value={searchDraft} onChange={(event) => setSearchDraft(event.target.value)} placeholder="搜索条码、库位号、云主机 IP…" style={{ paddingLeft: 33 }} />
-              </div>
-            </div>
-            <button type="submit" className="btn btn-secondary">搜索</button>
-            <button type="button" className={`btn ${activeFilters ? "btn-soft" : "btn-secondary"}`} onClick={() => setFiltersOpen((open) => !open)}>
-              <Filter size={14} /> 筛选 {activeFilters ? <span className="active-filter-count">{activeFilters}</span> : null}
-            </button>
-            {activeFilters ? <button type="button" className="btn btn-ghost" onClick={resetFilters}>清除筛选</button> : null}
-            <span className="spacer" />
-            <button type="button" className="icon-btn" onClick={() => void loadList()} title="刷新"><RefreshCw size={14} /></button>
-            <div className="field pagesize-select" style={{ minWidth: 98 }}>
-              <select className="select" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }} aria-label="每页显示数量">
-                {[10, 20, 50, 100].map((size) => <option key={size} value={size}>每页 {size}</option>)}
-              </select>
-            </div>
-          </form>
-          {filtersOpen ? (
-            <div className="filters-panel">
-              <div className="field">
-                <label>责任组</label>
-                <select className="select" value={filters.groupId} onChange={(event) => applyFilter("groupId", event.target.value)}>
-                  <option value="">全部责任组</option>
-                  {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>状态</label>
-                <select className="select" value={filters.statusId} onChange={(event) => applyFilter("statusId", event.target.value)}>
-                  <option value="">全部状态</option>
-                  {statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>问题分类</label>
-                <select className="select" value={filters.categoryId} onChange={(event) => applyFilter("categoryId", event.target.value)}>
-                  <option value="">全部分类</option>
-                  {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>优先级</label>
-                <select className="select" value={filters.priority} onChange={(event) => applyFilter("priority", event.target.value)}>
-                  <option value="">全部优先级</option>
-                  <option value="HIGH">高</option>
-                  <option value="MEDIUM">中</option>
-                  <option value="LOW">低</option>
-                </select>
-              </div>
-            </div>
-          ) : null}
-        </div>
-
         {selected.size > 0 ? (
           <div className="bulk-bar">
             <span>已选择 <b>{selected.size}</b> 个条码，共 {selectedIssueCount} 个问题项</span>
@@ -414,7 +434,7 @@ export function IssuesWorkspace({
                         <div className="empty-state" style={{ padding: "38px 20px" }}>
                           <div className="empty-icon"><Search size={20} /></div>
                           <h3>{activeFilters ? "没有匹配的问题" : "暂无问题记录"}</h3>
-                          <p>{activeFilters ? "尝试调整筛选条件，或清除筛选后查看全部。" : "点击右上角「录入问题」开始追踪。"}</p>
+                          <p>{activeFilters ? "尝试调整筛选条件，或清除筛选后查看全部。" : "点击上方「录入问题」开始追踪。"}</p>
                         </div>
                       </td></tr>
                     ) : rows.map((row, index) => (

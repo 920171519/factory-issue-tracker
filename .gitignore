@@ -3,6 +3,11 @@ node_modules/
 out/
 *.tsbuildinfo
 
+# 本地 pnpm 缓存/全局目录（按需放在仓库内时使用）
+.pnpm-store/
+.pnpm-home/
+.npm-cache/
+
 # local data and user uploads
 data/
 public/uploads/

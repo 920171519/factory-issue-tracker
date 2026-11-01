@@ -95,7 +95,7 @@ try {
   assert.equal(created.status(), 201);
   await page.waitForSelector(".modal", { state: "detached" });
   await page.waitForTimeout(1100);
-  assert.ok((await page.locator(".detail-tab").count()) >= 2);
+  assert.ok((await page.locator(".issue-main-tab").count()) >= 2);
   assert.ok((await page.textContent("body")).includes("问题已录入并按当前排班完成责任分配"));
   pass("界面录入问题、设备接口桩、条码详情标签页");
 

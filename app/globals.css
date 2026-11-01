@@ -405,6 +405,11 @@ ul, ol { margin: 0; }
 .issue-toolbar { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .issue-toolbar .field { min-width: 130px; }
 .issue-toolbar .search-field { flex: 1; min-width: 220px; }
+/* 标签页上方的统一工具区：录入/导入/模板 + 搜索 + 筛选 */
+.issues-toolbar-card { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.issues-toolbar-card .issue-list-actions { padding: 0; }
+.issues-toolbar-card .issue-toolbar { align-items: center; }
+.toolbar-target-hint { color: var(--muted-2); margin-left: 6px; font-size: 10.5px; }
 .issues-workbench { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .issues-workbench.with-detail { grid-template-columns: minmax(0, 1fr); }
 .list-pane { min-width: 0; }
