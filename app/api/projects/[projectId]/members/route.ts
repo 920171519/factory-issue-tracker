@@ -9,6 +9,7 @@ const schema = z.object({
   userId: z.string().trim().optional(),
   isPm: z.boolean().optional(),
   isSupervisor: z.boolean().optional(),
+  isSoftwareManager: z.boolean().optional(),
 }).refine((data) => Boolean(data.employeeNo || data.userId), { message: "请输入工号" });
 
 export async function GET(request: NextRequest, context: { params: Promise<{ projectId: string }> }) {

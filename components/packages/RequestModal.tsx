@@ -20,7 +20,7 @@ export function RequestModal({
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
-  const canPickAny = payload.permissions.canManage || payload.permissions.canPromote;
+  const canPickAny = payload.permissions.canSubmitAny;
   const eligiblePackages = payload.packages.filter(
     (pkg) => canPickAny || (pkg.groupId ? payload.permissions.groupIds.includes(pkg.groupId) : false),
   );

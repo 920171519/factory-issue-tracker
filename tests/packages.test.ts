@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "@/lib/db";
+import { updateProjectMemberRoles } from "@/lib/projects";
 import { createWorld, makeTestEnv, type TestEnv, type TestWorld } from "./helpers";
 import {
   concludeItem,
@@ -29,13 +30,19 @@ function makePackage(code: string, version: string, groupId: string | null, owne
   return createPackage(w.projectId, w.pm, { code, description: `${code} 描述`, version, groupId, ownerId }).id;
 }
 
+/** 把项目成员测试员设置为「软件经理」并返回其 id。 */
+function makeSoftwareManager(): string {
+  updateProjectMemberRoles(w.projectId, w.pm, w.tester, { isPm: false, isSupervisor: false, isSoftwareManager: true });
+  return w.tester;
+}
+
 function submitTest(packageId: string, version: string, userId = w.cpuLeader): string {
   return createRequest(w.projectId, userId, { kind: "TEST", packageId, version, ...REQUEST }).id;
 }
 
 function batchItems(batchId: string) {
   return getDb()
-    .prepare("SELECT package_id AS packageId, version, official_version AS officialVersion, updated_vs_official AS vsOfficial, updated_vs_previous AS vsPrevious, previous_version AS previousVersion, request_id AS requestId, conclusion FROM package_batch_items WHERE batch_id = ?")
+    .prepare("SELECT package_id AS packageId, version, official_version AS officialVersion, updated_vs_official AS vsOfficial, updated_vs_previous AS vsPrevious, previous_version AS previousVersion, request_id AS requestId, conclusion, barcodes FROM package_batch_items WHERE batch_id = ?")
     .all(batchId) as {
     packageId: string;
     version: string | null;
@@ -45,6 +52,7 @@ function batchItems(batchId: string) {
     previousVersion: string | null;
     requestId: string | null;
     conclusion: string;
+    barcodes: string;
   }[];
 }
 
@@ -56,7 +64,7 @@ function itemId(batchId: string, packageId: string): string {
   return row.id;
 }
 
-describe("软件包基础能力", () => {
+describe("软件包基础能力与提交权限", () => {
   it("仅项目 PM 可维护软件包与测试责任组", () => {
     expect(() => createPackage(w.projectId, w.cpuLeader, { code: "X1", version: "1.0", groupId: w.cpuGroupId })).toThrow(/项目 PM/);
     const id = makePackage("PKG-A", "1.0", w.cpuGroupId);
@@ -71,18 +79,35 @@ describe("软件包基础能力", () => {
     expect(() => submitTest(orphan, "1.1")).toThrow(/责任组/);
   });
 
-  it("仅软件包所属责任组成员或 PM/主管可提交转测试申请", () => {
+  it("项目成员都能提交，但只能选择自己责任组内的软件包", () => {
     const pkg = makePackage("PKG-A", "1.0", w.cpuGroupId);
-    expect(() => submitTest(pkg, "1.1", w.fanLeader)).toThrow(/所属责任组/);
+    // 风扇组负责人不属于 CPU 组 → 拒绝。
+    expect(() => submitTest(pkg, "1.1", w.fanLeader)).toThrow(/自己责任组/);
+    // 项目成员但不在任何责任组 → 拒绝。
+    expect(() => submitTest(pkg, "1.1", w.tester)).toThrow(/自己责任组/);
+    // 同组成员可以提交。
     expect(() => submitTest(pkg, "1.1", w.cpuMember)).not.toThrow();
     expect(() => submitTest(pkg, "1.1", w.cpuMember)).toThrow(/已有待组织/);
+    // PM / 主管 / 软件经理可代任意责任组提交。
     expect(() => createRequest(w.projectId, w.pm, { kind: "TEST", packageId: pkg, version: "1.2", ...REQUEST })).not.toThrow();
+    expect(() => createRequest(w.projectId, w.supervisor, { kind: "TEST", packageId: pkg, version: "1.3", ...REQUEST })).not.toThrow();
+    const softwareManager = makeSoftwareManager();
+    expect(() => createRequest(w.projectId, softwareManager, { kind: "TEST", packageId: pkg, version: "1.4", ...REQUEST })).not.toThrow();
   });
 
   it("缺少修改内容或存放链接时拒绝提交", () => {
     const pkg = makePackage("PKG-A", "1.0", w.cpuGroupId);
     expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "TEST", packageId: pkg, version: "1.1", changeSummary: "", packageUrl: "x" })).toThrow(/修改内容/);
     expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "TEST", packageId: pkg, version: "1.1", changeSummary: "改动", packageUrl: "" })).toThrow(/链接/);
+  });
+
+  it("软件经理、PM、主管可组织批次，责任组负责人不再具备组织权限", () => {
+    const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
+    const requestId = submitTest(a, "1.1");
+    expect(() => createBatch(w.projectId, w.cpuLeader, { kind: "TEST", requestIds: [requestId] })).toThrow(/组织/);
+    expect(() => createBatch(w.projectId, w.repairLeader, { kind: "TEST", requestIds: [requestId] })).toThrow(/组织/);
+    const softwareManager = makeSoftwareManager();
+    expect(() => createBatch(w.projectId, softwareManager, { kind: "TEST", requestIds: [requestId] })).not.toThrow();
   });
 });
 
@@ -120,24 +145,14 @@ describe("转测试批次与配套表", () => {
   it("连续两次转测：分别标注相较正式版本与相较上一批转测版本", () => {
     const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
     const b = makePackage("PKG-B", "2.0", w.cpuGroupId);
-    const first = createBatch(w.projectId, w.pm, {
-      kind: "TEST",
-      requestIds: [submitTest(a, "1.1")],
-      title: "第一批",
-    });
-    // 第一批：A 更新，B 未变。
+    const first = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")], title: "第一批" });
     const firstA = batchItems(first.batchId).find((row) => row.packageId === a)!;
     const firstB = batchItems(first.batchId).find((row) => row.packageId === b)!;
     expect(firstA.vsOfficial).toBe(1);
     expect(firstA.vsPrevious).toBe(1);
     expect(firstB.vsPrevious).toBe(0);
 
-    // 第二批只转 B：A 回到正式版本（相较上一批有变化），B 相较正式版本更新。
-    const second = createBatch(w.projectId, w.pm, {
-      kind: "TEST",
-      requestIds: [submitTest(b, "2.1")],
-      title: "第二批",
-    });
+    const second = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(b, "2.1")], title: "第二批" });
     const secondA = batchItems(second.batchId).find((row) => row.packageId === a)!;
     const secondB = batchItems(second.batchId).find((row) => row.packageId === b)!;
     expect(secondA.version).toBe("1.0");
@@ -151,25 +166,35 @@ describe("转测试批次与配套表", () => {
     const payload = getPackagesPayload(w.projectId, w.pm);
     expect(payload.testBatches.map((batch) => batch.code)).toEqual([second.code, first.code]);
   });
-
-  it("只有 PM / 主管 / 测试责任组负责人可组织批次", () => {
-    const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
-    const requestId = submitTest(a, "1.1");
-    expect(() => createBatch(w.projectId, w.cpuLeader, { kind: "TEST", requestIds: [requestId] })).toThrow(/组织/);
-    expect(() => createBatch(w.projectId, w.repairLeader, { kind: "TEST", requestIds: [requestId] })).not.toThrow();
-  });
 });
 
-describe("测试结论与转验证", () => {
-  function prepared() {
+describe("在测跟踪与测试结论", () => {
+  it("在测跟踪跨批次汇总未出结论的转测包", () => {
     const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
-    const { batchId } = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")], title: "第一批" });
-    return { a, batchId, itemId: itemId(batchId, a) };
-  }
+    const b = makePackage("PKG-B", "2.0", w.cpuGroupId);
+    const first = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")], title: "第一批" });
+    const second = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(b, "2.1")], title: "第二批" });
+
+    let payload = getPackagesPayload(w.projectId, w.pm);
+    expect(payload.stats.openTest).toBe(2);
+    expect(payload.openTestItems.map((item) => item.packageCode).sort()).toEqual(["PKG-A", "PKG-B"]);
+    const secondItem = payload.openTestItems.find((item) => item.packageId === b)!;
+    expect(secondItem.batchId).toBe(second.batchId);
+    expect(secondItem.batchCode).toBe(second.code);
+    expect(secondItem.submittedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+    concludeItem(w.projectId, first.batchId, itemId(first.batchId, a), w.repairLeader, { conclusion: "PASS", note: "通过" });
+    payload = getPackagesPayload(w.projectId, w.pm);
+    expect(payload.stats.openTest).toBe(1);
+    expect(payload.openTestItems[0].packageCode).toBe("PKG-B");
+  });
 
   it("结论仅测试责任组成员或 PM/主管可填写，失败必须说明", () => {
-    const { batchId, itemId: id } = prepared();
-    expect(() => concludeItem(w.projectId, batchId, id, w.cpuLeader, { conclusion: "PASS" })).toThrow(/测试责任组/);
+    const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
+    const { batchId } = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")] });
+    const id = itemId(batchId, a);
+    const softwareManager = makeSoftwareManager();
+    expect(() => concludeItem(w.projectId, batchId, id, softwareManager, { conclusion: "PASS" })).toThrow(/测试责任组/);
     expect(() => concludeItem(w.projectId, batchId, id, w.repairLeader, { conclusion: "FAIL", note: "" })).toThrow(/说明/);
     expect(() => concludeItem(w.projectId, batchId, id, w.repairLeader, { conclusion: "CONDITIONAL", note: "需复测" })).not.toThrow();
     expect(() => concludeItem(w.projectId, batchId, id, w.pm, { conclusion: "PASS", note: "PM 兜底" })).not.toThrow();
@@ -184,48 +209,96 @@ describe("测试结论与转验证", () => {
     const { batchId } = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")] });
     expect(() => concludeItem(w.projectId, batchId, itemId(batchId, b), w.repairLeader, { conclusion: "PASS" })).toThrow(/实际转测/);
   });
+});
 
-  it("转验证申请必须基于测试通过记录且版本一致", () => {
-    const { a, batchId, itemId: id } = prepared();
-    // 未出结论前不能申请。
-    expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: id })).toThrow(/通过/);
+describe("转验证与条码", () => {
+  function passedTest() {
+    const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
+    const { batchId } = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")] });
+    const id = itemId(batchId, a);
     concludeItem(w.projectId, batchId, id, w.repairLeader, { conclusion: "PASS", note: "通过" });
-    expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "9.9", sourceItemId: id })).toThrow(/版本/);
-    const requestId = createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: id }).id;
-    expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: id })).toThrow(/已提交/);
+    return { a, batchId, testItemId: id };
+  }
+
+  it("测试通过后该包责任组任意成员都可提交转验证申请", () => {
+    const { a, testItemId } = passedTest();
+    expect(() => createRequest(w.projectId, w.fanLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItemId })).toThrow(/转验证申请/);
+    const requestId = createRequest(w.projectId, w.cpuMember, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItemId }).id;
+    expect(requestId).toMatch(/^prq_/);
     expect(getPackagesPayload(w.projectId, w.pm).pendingVerifyRequests.map((request) => request.id)).toContain(requestId);
   });
 
-  it("转验证批次只包含被申请的软件包，并可绑定多个条码", () => {
-    const { a, batchId, itemId: id } = prepared();
+  it("转验证申请必须基于测试通过记录且版本一致", () => {
+    const { a, testItemId } = passedTest();
+    expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "9.9", sourceItemId: testItemId })).toThrow(/版本/);
+    createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItemId });
+    expect(() => createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItemId })).toThrow(/已提交/);
+  });
+
+  it("组织转验证时必须逐包填写验证条码，之后仍可修改", () => {
+    const { a, testItemId } = passedTest();
     makePackage("PKG-B", "2.0", w.cpuGroupId);
-    concludeItem(w.projectId, batchId, id, w.repairLeader, { conclusion: "PASS" });
-    const verifyRequest = createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: id }).id;
-    const { batchId: verifyBatchId } = createBatch(w.projectId, w.pm, { kind: "VERIFY", requestIds: [verifyRequest] });
-    const items = batchItems(verifyBatchId);
+    const verifyRequest = createRequest(w.projectId, w.cpuMember, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItemId }).id;
+    expect(() => createBatch(w.projectId, w.pm, { kind: "VERIFY", requestIds: [verifyRequest] })).toThrow(/验证条码/);
+
+    const { batchId } = createBatch(w.projectId, w.pm, {
+      kind: "VERIFY",
+      requestIds: [verifyRequest],
+      barcodes: [{ requestId: verifyRequest, barcodes: ["BAR-1", "BAR-2", "BAR-1"] }],
+    });
+    const items = batchItems(batchId);
     expect(items).toHaveLength(1);
     expect(items[0].packageId).toBe(a);
     expect(items[0].version).toBe("1.1");
+    expect(JSON.parse(items[0].barcodes)).toEqual(["BAR-1", "BAR-2"]);
 
-    const verifyItem = itemId(verifyBatchId, a);
-    setItemBarcodes(w.projectId, verifyBatchId, verifyItem, w.repairLeader, ["BAR-1", "BAR-2", "BAR-1"]);
+    const verifyItem = itemId(batchId, a);
+    setItemBarcodes(w.projectId, batchId, verifyItem, w.repairLeader, ["BAR-3", "BAR-4"]);
     const payload = getPackagesPayload(w.projectId, w.pm);
-    expect(payload.verifyBatches[0].items[0].barcodes).toEqual(["BAR-1", "BAR-2"]);
-    expect(() => setItemBarcodes(w.projectId, batchId, id, w.repairLeader, ["X"])).toThrow(/转验证/);
+    expect(payload.verifyBatches[0].items[0].barcodes).toEqual(["BAR-3", "BAR-4"]);
+    expect(payload.barcodeLedger.map((entry) => entry.barcode).sort()).toEqual(["BAR-3", "BAR-4"]);
+    expect(() => setItemBarcodes(w.projectId, batchId, itemId(batchId, a), w.repairLeader, ["X"])).not.toThrow();
+  });
+
+  it("验证条码台账按条码关联软件包、结论与转正状态", () => {
+    const { a } = passedTest();
+    const testItemId = getPackagesPayload(w.projectId, w.pm).testBatches[0].items.find((item) => item.packageId === a)!.id;
+    const requestId = createRequest(w.projectId, w.cpuMember, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItemId }).id;
+    const { batchId } = createBatch(w.projectId, w.pm, {
+      kind: "VERIFY",
+      requestIds: [requestId],
+      barcodes: [{ requestId, barcodes: ["BAR-1", "BAR-2"] }],
+    });
+    const verifyItem = itemId(batchId, a);
+    concludeItem(w.projectId, batchId, verifyItem, w.repairLeader, { conclusion: "PASS", note: "验证通过" });
+    promoteItems(w.projectId, w.pm, batchId, [verifyItem]);
+
+    const payload = getPackagesPayload(w.projectId, w.pm);
+    const ledger = payload.barcodeLedger;
+    expect(ledger).toHaveLength(2);
+    const entry = ledger.find((item) => item.barcode === "BAR-2")!;
+    expect(entry.packageId).toBe(a);
+    expect(entry.conclusion).toBe("PASS");
+    expect(entry.promoted).toBe(true);
+    expect(entry.batchId).toBe(batchId);
   });
 });
 
-describe("验证结论、转正与历史", () => {
+describe("转正与历史", () => {
   function verified() {
     const a = makePackage("PKG-A", "1.0", w.cpuGroupId);
-    const b = makePackage("PKG-B", "2.0", w.fanGroupId);
+    makePackage("PKG-B", "2.0", w.fanGroupId);
     const testBatch = createBatch(w.projectId, w.pm, { kind: "TEST", requestIds: [submitTest(a, "1.1")], title: "第一批" });
     const testItem = itemId(testBatch.batchId, a);
     concludeItem(w.projectId, testBatch.batchId, testItem, w.repairLeader, { conclusion: "PASS" });
-    const request = createRequest(w.projectId, w.cpuLeader, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItem }).id;
-    const verifyBatch = createBatch(w.projectId, w.pm, { kind: "VERIFY", requestIds: [request] });
+    const request = createRequest(w.projectId, w.cpuMember, { kind: "VERIFY", packageId: a, version: "1.1", sourceItemId: testItem }).id;
+    const verifyBatch = createBatch(w.projectId, w.pm, {
+      kind: "VERIFY",
+      requestIds: [request],
+      barcodes: [{ requestId: request, barcodes: ["BAR-1", "BAR-2"] }],
+    });
     const verifyItem = itemId(verifyBatch.batchId, a);
-    return { a, b, verifyBatchId: verifyBatch.batchId, verifyItem, testItem };
+    return { a, verifyBatchId: verifyBatch.batchId, verifyItem, testItem };
   }
 
   it("只有验证通过且未转正的软件包可以转正，转正后正式版本更新", () => {
@@ -253,7 +326,6 @@ describe("验证结论、转正与历史", () => {
 
   it("历史按时间倒序记录申请、批次、结论、条码与转正", () => {
     const { a, verifyBatchId, verifyItem } = verified();
-    setItemBarcodes(w.projectId, verifyBatchId, verifyItem, w.repairLeader, ["BAR-1"]);
     concludeItem(w.projectId, verifyBatchId, verifyItem, w.repairLeader, { conclusion: "PASS", note: "验证通过" });
     promoteItems(w.projectId, w.pm, verifyBatchId, [verifyItem]);
 
@@ -265,11 +337,12 @@ describe("验证结论、转正与历史", () => {
     expect(types).toContain("BARCODES");
     expect(types).toContain("PROMOTE");
     expect(history.package.officialVersion).toBe("1.1");
-    // 时间倒序：时间戳不倒挂，最新事件在最前。
     for (let index = 0; index < history.events.length - 1; index += 1) {
       expect(history.events[index].at >= history.events[index + 1].at).toBe(true);
     }
     expect(history.events[0].type).toBe("PROMOTE");
+    // 历史时间精确到毫秒 ISO，展示层精确到秒。
+    expect(history.events[0].at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 
   it("转正后可继续提交下一次转测试，状态回到待组织", () => {

@@ -1,21 +1,24 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { BadgeCheck, ChevronDown, ChevronUp, Clock, ShieldCheck, Undo2 } from "lucide-react";
+import { BadgeCheck, Barcode, ChevronDown, ChevronUp, Clock, ShieldCheck, Undo2 } from "lucide-react";
 import type { BatchItemView, PackagesPayload } from "@/lib/packages";
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import { useToast } from "@/components/Toast";
 import { BarcodeEditor, ChangeFlag, ConclusionBadge, ConclusionModal, EmptyHint, VersionText } from "@/components/packages/shared";
 import { OrganizeBatchModal } from "@/components/packages/TestFlow";
 import { RequestModal } from "@/components/packages/RequestModal";
+import { formatDateTime } from "@/lib/time";
 
 export function VerifyFlow({
   projectId,
   payload,
+  currentUserId,
   onChanged,
 }: {
   projectId: string;
   payload: PackagesPayload;
+  currentUserId: string;
   onChanged: () => Promise<void>;
 }) {
   const toast = useToast();
@@ -27,12 +30,26 @@ export function VerifyFlow({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(verifyBatches[0] ? [verifyBatches[0].id] : []));
   const [barcodeDraft, setBarcodeDraft] = useState<Record<string, string[]>>({});
   const [promotedPick, setPromotedPick] = useState<Set<string>>(new Set());
+  const [barcodeSearch, setBarcodeSearch] = useState("");
   const [busy, setBusy] = useState(false);
 
   const selectableIds = pendingVerifyRequests.map((request) => request.id);
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
 
   const candidates = useMemo(() => verifyRequestCandidates, [verifyRequestCandidates]);
+  const ledgerEntries = useMemo(() => {
+    const keyword = barcodeSearch.trim().toLowerCase();
+    if (!keyword) return payload.barcodeLedger;
+    return payload.barcodeLedger.filter((entry) =>
+      `${entry.barcode} ${entry.packageCode} ${entry.version || ""} ${entry.batchCode}`.toLowerCase().includes(keyword),
+    );
+  }, [payload.barcodeLedger, barcodeSearch]);
+
+  function canSubmitVerify(item: BatchItemView): boolean {
+    if (permissions.canSubmitAny) return true;
+    if (item.groupId && permissions.groupIds.includes(item.groupId)) return true;
+    return item.submittedById === currentUserId;
+  }
 
   function toggle(id: string) {
     setSelected((current) => {
@@ -154,9 +171,13 @@ export function VerifyFlow({
                   <td>{item.submittedByName || <span className="hint">—</span>}</td>
                   <td className="wrap-cell">{item.changeSummary || <span className="hint">—</span>}</td>
                   <td className="actions">
-                    <button type="button" className="btn btn-primary btn-sm" onClick={() => setRequestSource(item)}>
-                      提交转验证申请
-                    </button>
+                    {canSubmitVerify(item) ? (
+                      <button type="button" className="btn btn-primary btn-sm" onClick={() => setRequestSource(item)}>
+                        提交转验证申请
+                      </button>
+                    ) : (
+                      <span className="hint">仅该责任组成员或申请人可申请</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -219,7 +240,7 @@ export function VerifyFlow({
                   <td><VersionText value={request.version} /></td>
                   <td className="wrap-cell">{request.changeSummary || <span className="hint">—</span>}</td>
                   <td>{request.submittedByName}</td>
-                  <td className="mini-meta">{request.submittedAt.slice(0, 16).replace("T", " ")}</td>
+                  <td className="mini-meta mono">{formatDateTime(request.submittedAt, { seconds: true })}</td>
                   <td className="actions">
                     <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void cancelRequest(request.id)}>
                       <Undo2 size={12} /> 撤回
@@ -252,7 +273,7 @@ export function VerifyFlow({
                   <button type="button" className="batch-head" onClick={() => toggleBatch(batch.id)} aria-expanded={open}>
                     <span className="batch-code mono">{batch.code}</span>
                     <span className="batch-title">{batch.title || "转验证批次"}</span>
-                    <span className="batch-meta"><Clock size={12} /> {batch.scheduledDate || batch.createdAt.slice(0, 10)} · {batch.createdByName}</span>
+                    <span className="batch-meta"><Clock size={12} /> 组织 {formatDateTime(batch.createdAt, { seconds: true })} · {batch.createdByName}</span>
                     <span className={`badge ${batch.status === "DONE" ? "badge-green" : "badge-blue"}`}>
                       {batch.status === "DONE" ? "已验证" : `待结论 ${batch.summary.pending}`}
                     </span>
@@ -361,6 +382,61 @@ export function VerifyFlow({
               </div>
             );
           })}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h2 className="section-title"><Barcode size={14} style={{ verticalAlign: "-2px" }} /> 验证条码台账</h2>
+            <div className="section-sub">按条码查看所属软件包、验证批次与验证结论，便于用条码跟踪是否验证通过。</div>
+          </div>
+          <div className="header-actions">
+            <input
+              className="input"
+              style={{ maxWidth: 240 }}
+              value={barcodeSearch}
+              onChange={(event) => setBarcodeSearch(event.target.value)}
+              placeholder="搜索条码 / 软件包 / 批次"
+              aria-label="搜索验证条码"
+            />
+            <span className="badge badge-outline">{ledgerEntries.length} 条条码</span>
+          </div>
+        </div>
+        <div className="table-wrap">
+          <table className="table packages-barcode-table">
+            <thead>
+              <tr>
+                <th>验证条码</th>
+                <th>软件包</th>
+                <th>责任组</th>
+                <th>验证版本</th>
+                <th>验证批次</th>
+                <th>验证结论</th>
+                <th>结论时间</th>
+                <th>转正</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ledgerEntries.length === 0 ? (
+                <tr><td colSpan={8}><EmptyHint title="暂无验证条码" description="组织转验证批次时需要为每个软件包填写验证条码。" /></td></tr>
+              ) : ledgerEntries.map((entry) => (
+                <tr key={`${entry.batchId}-${entry.packageId}-${entry.barcode}`}>
+                  <td className="main-cell mono">{entry.barcode}</td>
+                  <td>
+                    <div className="mono">{entry.packageCode}</div>
+                    {entry.packageName && entry.packageName !== entry.packageCode ? <div className="cell-sub">{entry.packageName}</div> : null}
+                  </td>
+                  <td>{entry.groupName ? <span className="chip">{entry.groupName}</span> : <span className="hint">未分配</span>}</td>
+                  <td><VersionText value={entry.version} /></td>
+                  <td className="mono">{entry.batchCode}</td>
+                  <td><ConclusionBadge conclusion={entry.conclusion} /></td>
+                  <td className="mini-meta mono">{formatDateTime(entry.concludedAt, { seconds: true })}</td>
+                  <td>{entry.promoted ? <span className="badge badge-green">已转正</span> : <span className="hint">—</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

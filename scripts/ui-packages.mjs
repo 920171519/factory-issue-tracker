@@ -65,7 +65,7 @@ try {
 
   // 2. 统计卡与总览
   const metrics = await page.locator(".packages-metrics .metric-value").allTextContents();
-  assert.deepEqual(metrics.map((value) => value.trim()), ["6", "0", "0", "1", "1"], `统计卡应显示 6/0/0/1/1，实际 ${metrics.join(",")}`);
+  assert.deepEqual(metrics.map((value) => value.trim()), ["6", "1", "0", "1", "1"], `统计卡应显示 6/1/0/1/1，实际 ${metrics.join(",")}`);
   const overviewRows = page.locator(".packages-table tbody tr");
   assert.equal(await overviewRows.count(), 6, "软件包总览应有 6 个软件包");
   const pcbRow = overviewRows.filter({ hasText: "XH-SYS-PCB-A01" });
@@ -74,8 +74,11 @@ try {
   const biosRow = overviewRows.filter({ hasText: "XH-BIOS-FW" });
   assert.ok((await biosRow.textContent()).includes("待提交转验证"), "BIOS 包应待提交转验证");
   assert.ok((await biosRow.textContent()).includes("Rev.C1"), "BIOS 包应展示测试版本 Rev.C1");
+  const cpldRow = overviewRows.filter({ hasText: "XH-CPLD-LOGIC" });
+  assert.ok((await cpldRow.textContent()).includes("测试中"), "CPLD 包应处于测试中");
+  assert.equal(await page.locator(".packages-settings").count(), 0, "软件包总览不应再展示测试责任组设置");
   await page.screenshot({ path: `${out}/01-overview.png`, fullPage: true });
-  pass("软件包总览展示正式/验证/测试版本与当前状态");
+  pass("软件包总览展示三版本、状态，且不再展示测试责任组");
 
   // 3. 筛选
   await page.locator(".packages-filter-bar input.input").fill("BIOS");
@@ -90,7 +93,7 @@ try {
   await page.waitForTimeout(300);
   pass("关键词与责任组筛选生效");
 
-  // 4. 变更历史
+  // 4. 变更历史（时间精确到秒）
   await overviewRows.filter({ hasText: "XH-SYS-PCB-A01" }).getByRole("button", { name: "历史" }).click();
   await page.waitForSelector(".modal .pkg-history-timeline", { timeout: 15000 });
   await page.waitForTimeout(300);
@@ -100,30 +103,48 @@ try {
   assert.ok(historyText.includes("绑定验证条码"), "历史应包含条码记录");
   assert.ok(historyText.includes("测试结论"), "历史应包含测试结论");
   assert.ok((await page.locator(".pkg-history-item").count()) >= 6, "历史事件应不少于 6 条");
+  const historyMeta = await page.locator(".pkg-history-meta").allTextContents();
+  assert.ok(historyMeta.some((text) => /\d{2}:\d{2}:\d{2}/.test(text)), "历史时间应精确到秒");
   await page.screenshot({ path: `${out}/02-history.png` });
   await page.locator(".modal-close").click();
   await page.waitForTimeout(300);
-  pass("变更历史按时间线展示转测、结论、条码与验证结论");
+  pass("变更历史按时间线展示（时间精确到秒）");
 
-  // 5. 转测试
+  // 5. 在测跟踪：跨批次未出结论的配套包
+  await page.getByRole("tab", { name: /在测跟踪/ }).click();
+  await page.waitForTimeout(500);
+  const trackingRows = page.locator(".packages-tracking-table tbody tr");
+  assert.equal(await trackingRows.count(), 1, "在测跟踪应有 1 个未出结论的包");
+  const trackingText = await trackingRows.first().textContent();
+  assert.ok(trackingText.includes("XH-CPLD-LOGIC"), "在测跟踪应包含 CPLD 包");
+  assert.ok(trackingText.includes("T-2026-002"), "在测跟踪应显示所属批次");
+  const trackingTimes = await page.locator(".packages-tracking-table .mini-meta.mono").allTextContents();
+  assert.ok(trackingTimes.some((text) => /\d{2}:\d{2}:\d{2}/.test(text)), "转测时间应精确到秒");
+  await page.screenshot({ path: `${out}/03-tracking.png`, fullPage: true });
+  pass("在测跟踪展示跨批次未完成测试的配套包（秒级时间）");
+
+  // 6. 转测试
   await page.getByRole("tab", { name: /转测试/ }).click();
   await page.waitForTimeout(500);
   const pendingTable = page.locator(".packages-request-table");
-  assert.ok((await pendingTable.textContent()).includes("XH-CPLD-LOGIC"), "待组织队列应包含 CPLD 包");
+  const pendingText = await pendingTable.textContent();
+  assert.ok(pendingText.includes("XH-BIOS-FW"), "待组织队列应包含 BIOS 包");
+  assert.ok(pendingText.includes("Rev.C2"), "待组织队列应展示申请版本 Rev.C2");
+  assert.equal(await page.locator(".batch-card").count(), 2, "应有两个转测试批次");
   const batchCard = page.locator(".batch-card").first();
   assert.ok((await batchCard.locator(".batch-code").textContent()).includes("T-"), "批次号应以 T- 开头");
   const matrixRows = batchCard.locator(".packages-matrix tbody tr");
   assert.equal(await matrixRows.count(), 6, "配套表应包含全部 6 个软件包");
-  const biosMatrix = matrixRows.filter({ hasText: "XH-BIOS-FW" });
-  const biosMatrixText = await biosMatrix.textContent();
-  assert.ok(biosMatrixText.includes("有更新"), "BIOS 转测行应标记有更新");
-  assert.ok(biosMatrixText.includes("通过"), "BIOS 转测行应展示通过结论");
+  const cpldMatrix = matrixRows.filter({ hasText: "XH-CPLD-LOGIC" });
+  const cpldMatrixText = await cpldMatrix.textContent();
+  assert.ok(cpldMatrixText.includes("有更新"), "CPLD 转测行应标记有更新");
+  assert.ok(cpldMatrixText.includes("待结论"), "CPLD 转测行应展示待结论");
   const fanMatrix = matrixRows.filter({ hasText: "XH-FAN-4020" });
   assert.ok((await fanMatrix.textContent()).includes("未变更"), "未转测行应提示未变更");
-  await page.screenshot({ path: `${out}/03-test-batches.png`, fullPage: true });
-  pass("转测试批次展示全量配套表与版本差异标记");
+  await page.screenshot({ path: `${out}/04-test-batches.png`, fullPage: true });
+  pass("转测试批次展示全量配套表、版本差异与待结论状态");
 
-  // 6. 转验证与转正
+  // 7. 转验证与转正 + 条码台账
   await page.getByRole("tab", { name: /转验证/ }).click();
   await page.waitForTimeout(500);
   const verifyPanel = page.locator(".packages-panel");
@@ -135,10 +156,36 @@ try {
   const pcbVerifyRow = verifyRows.filter({ hasText: "XH-SYS-PCB-A01" });
   assert.ok((await pcbVerifyRow.textContent()).includes("已转正") === false, "PCB 尚未转正");
   assert.ok(await pcbVerifyRow.locator("input[type=checkbox]").count() >= 1, "验证通过后可勾选转正");
-  await page.screenshot({ path: `${out}/04-verify.png`, fullPage: true });
-  pass("转验证批次展示多条码、结论与转正入口");
+  const ledgerRows = page.locator(".packages-barcode-table tbody tr");
+  assert.equal(await ledgerRows.count(), 2, "条码台账应有两条条码");
+  assert.ok((await ledgerRows.first().textContent()).includes("XH-SYS-PCB-A01"), "条码台账应关联软件包");
+  await page.locator('input[aria-label="搜索验证条码"]').fill("MIX");
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(".packages-barcode-table tbody tr").count(), 1, "条码搜索应只保留匹配项");
+  await page.screenshot({ path: `${out}/05-verify.png`, fullPage: true });
+  pass("转验证批次展示多条码、结论与转正入口，条码台账可检索");
 
-  // 7. 基础信息页不再有编码清单
+  // 8. 测试责任组改到责任组页面配置
+  await page.goto(`${BASE}/projects/${projectId}/groups`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const testerSelect = page.locator('select[aria-label="测试责任组"]');
+  assert.equal(await testerSelect.count(), 1, "责任组页面应有测试责任组配置");
+  const testerGroupId = await testerSelect.inputValue();
+  assert.ok(testerGroupId, "测试责任组应有默认值");
+  const testerGroupName = await testerSelect.locator("option:checked").textContent();
+  assert.ok((testerGroupName || "").includes("复测组"), `测试责任组应为复测组，实际 ${testerGroupName}`);
+  pass("测试责任组在责任组页面配置");
+
+  // 9. 成员页面可授予软件经理角色
+  await page.goto(`${BASE}/projects/${projectId}/members`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const memberText = await page.locator("body").textContent();
+  assert.ok(memberText.includes("周敏"), "成员页应包含演示软件经理账号");
+  assert.ok(await page.getByRole("button", { name: /软件经理/ }).count() >= 1, "成员页应可授予软件经理角色");
+  assert.ok(memberText.includes("m00000012"), "应展示软件经理工号");
+  pass("项目成员页支持软件经理角色");
+
+  // 10. 基础信息页不再有编码清单
   await page.goto(`${BASE}/projects/${projectId}/info`, { waitUntil: "networkidle" });
   await page.waitForTimeout(500);
   const infoText = await page.locator("body").textContent();
@@ -151,7 +198,7 @@ try {
   await page.waitForTimeout(600);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(400);
-  await page.screenshot({ path: `${out}/05-mobile.png`, fullPage: true });
+  await page.screenshot({ path: `${out}/06-mobile.png`, fullPage: true });
 
   const realErrors = errors.filter((text) => !text.includes("favicon.ico"));
   const realFailed = failedResources.filter((text) => !text.includes("favicon.ico"));

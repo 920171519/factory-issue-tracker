@@ -14,9 +14,10 @@ interface GroupsClientProps {
   groups: GroupCard[];
   memberOptions: { id: string; name: string; employeeNo: string }[];
   isPm: boolean;
+  testerGroupId: string;
 }
 
-export function GroupsClient({ projectId, groups, memberOptions, isPm }: GroupsClientProps) {
+export function GroupsClient({ projectId, groups, memberOptions, isPm, testerGroupId }: GroupsClientProps) {
   const router = useRouter();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -27,6 +28,27 @@ export function GroupsClient({ projectId, groups, memberOptions, isPm }: GroupsC
   const [fallbackAssigneeId, setFallbackAssigneeId] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [testerGroup, setTesterGroup] = useState(testerGroupId);
+  const [testerSaving, setTesterSaving] = useState(false);
+
+  async function saveTesterGroup(groupId: string) {
+    setTesterSaving(true);
+    setError("");
+    try {
+      await apiFetch(`/api/projects/${projectId}/packages/settings`, {
+        method: "PATCH",
+        body: JSON.stringify({ testerGroupId: groupId || null }),
+      });
+      setTesterGroup(groupId);
+      toast.success("测试责任组已更新");
+      router.refresh();
+    } catch (saveError) {
+      setError(errorMessage(saveError));
+      toast.error(errorMessage(saveError));
+    } finally {
+      setTesterSaving(false);
+    }
+  }
 
   function toggleLeader(id: string) {
     setLeaderIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -75,6 +97,35 @@ export function GroupsClient({ projectId, groups, memberOptions, isPm }: GroupsC
             <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}><Plus size={15} /> 新增责任组</button>
           </div>
         ) : null}
+      </div>
+
+      <div className="card card-pad">
+        <div className="packages-settings-row">
+          <div>
+            <h2 className="section-title" style={{ marginBottom: 2 }}>测试责任组</h2>
+            <div className="section-sub">该责任组成员负责查看转测试配套表、给出测试/转验证结论；软件经理、项目 PM、项目主管负责组织转测试与转验证批次。</div>
+          </div>
+          <span className="spacer" />
+          {isPm ? (
+            <select
+              className="select"
+              style={{ maxWidth: 230 }}
+              value={testerGroup}
+              disabled={testerSaving}
+              onChange={(event) => void saveTesterGroup(event.target.value)}
+              aria-label="测试责任组"
+            >
+              <option value="">未设置</option>
+              {groups.filter((group) => group.enabled).map((group) => (
+                <option key={group.id} value={group.id}>{group.name}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="badge badge-outline">
+              {groups.find((group) => group.id === testerGroup)?.name || "未设置"}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="callout-strip">

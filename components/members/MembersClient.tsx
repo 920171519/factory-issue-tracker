@@ -21,10 +21,12 @@ export function MembersClient({ projectId, members, isPm }: MembersClientProps) 
   const [employeeNo, setEmployeeNo] = useState("");
   const [newIsPm, setNewIsPm] = useState(false);
   const [newIsSupervisor, setNewIsSupervisor] = useState(false);
+  const [newIsSoftwareManager, setNewIsSoftwareManager] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const pmCount = members.filter((member) => member.isPm).length;
   const supervisorCount = members.filter((member) => member.isSupervisor).length;
+  const softwareManagerCount = members.filter((member) => member.isSoftwareManager).length;
 
   async function addMember(event: React.FormEvent) {
     event.preventDefault();
@@ -33,11 +35,12 @@ export function MembersClient({ projectId, members, isPm }: MembersClientProps) 
     try {
       await apiFetch(`/api/projects/${projectId}/members`, {
         method: "POST",
-        body: JSON.stringify({ employeeNo, isPm: newIsPm, isSupervisor: newIsSupervisor }),
+        body: JSON.stringify({ employeeNo, isPm: newIsPm, isSupervisor: newIsSupervisor, isSoftwareManager: newIsSoftwareManager }),
       });
       setEmployeeNo("");
       setNewIsPm(false);
       setNewIsSupervisor(false);
+      setNewIsSoftwareManager(false);
       toast.success("项目成员已添加");
       router.refresh();
     } catch (addError) {
@@ -48,7 +51,7 @@ export function MembersClient({ projectId, members, isPm }: MembersClientProps) 
     }
   }
 
-  async function updateRoles(member: ProjectMemberView, next: { isPm: boolean; isSupervisor: boolean }) {
+  async function updateRoles(member: ProjectMemberView, next: { isPm: boolean; isSupervisor: boolean; isSoftwareManager: boolean }) {
     setError("");
     setBusy(`role-${member.userId}`);
     try {
@@ -96,7 +99,7 @@ export function MembersClient({ projectId, members, isPm }: MembersClientProps) 
         <div className="card metric-card"><div className="metric-label"><ContactRound size={15} /> 项目成员</div><div className="metric-value">{members.length}</div><div className="metric-note">可访问当前项目的全部账号</div></div>
         <div className="card metric-card"><div className="metric-label"><ShieldCheck size={15} /> 项目 PM</div><div className="metric-value">{pmCount}</div><div className="metric-note">可审批删除、管理全部配置</div></div>
         <div className="card metric-card"><div className="metric-label"><UsersRound size={15} /> 项目主管</div><div className="metric-value">{supervisorCount}</div><div className="metric-note">全量信息可见，可强制转交</div></div>
-        <div className="card metric-card"><div className="metric-label"><UsersRound size={15} /> 组负责人</div><div className="metric-value">{members.filter((member) => member.groups.some((group) => group.isLeader)).length}</div><div className="metric-note">同时担任至少一个责任组负责人</div></div>
+        <div className="card metric-card"><div className="metric-label"><UsersRound size={15} /> 软件经理</div><div className="metric-value">{softwareManagerCount}</div><div className="metric-note">可组织转测试 / 转验证批次</div></div>
       </div>
 
       {!isPm ? <div className="callout-strip"><ShieldCheck size={14} /> 当前为只读成员视图；新增成员与角色维护仅项目 PM 可操作。</div> : (
@@ -109,6 +112,7 @@ export function MembersClient({ projectId, members, isPm }: MembersClientProps) 
             </div>
             <label className="checkbox-line" style={{ minHeight: 38 }}><input type="checkbox" checked={newIsPm} onChange={(event) => setNewIsPm(event.target.checked)} /> 项目 PM</label>
             <label className="checkbox-line" style={{ minHeight: 38 }}><input type="checkbox" checked={newIsSupervisor} onChange={(event) => setNewIsSupervisor(event.target.checked)} /> 项目主管</label>
+            <label className="checkbox-line" style={{ minHeight: 38 }}><input type="checkbox" checked={newIsSoftwareManager} onChange={(event) => setNewIsSoftwareManager(event.target.checked)} /> 软件经理</label>
             <button type="submit" className="btn btn-primary" disabled={busy !== null}><UserPlus size={14} /> 添加成员</button>
           </div>
           <div className="field-hint" style={{ marginTop: 7 }}>成员须先注册账号。责任组负责人也可在组内通过工号添加成员，届时会自动加入项目。</div>
@@ -133,15 +137,17 @@ export function MembersClient({ projectId, members, isPm }: MembersClientProps) 
                   <td>
                     {isPm ? (
                       <div className="row" style={{ gap: 4 }}>
-                        <button type="button" className={`role-pill ${member.isPm ? "on" : ""}`} disabled={busy !== null} onClick={() => void updateRoles(member, { isPm: !member.isPm, isSupervisor: member.isSupervisor })}>{member.isPm ? "✓ " : ""}项目 PM</button>
-                        <button type="button" className={`role-pill ${member.isSupervisor ? "on" : ""}`} disabled={busy !== null} onClick={() => void updateRoles(member, { isPm: member.isPm, isSupervisor: !member.isSupervisor })}>{member.isSupervisor ? "✓ " : ""}项目主管</button>
+                        <button type="button" className={`role-pill ${member.isPm ? "on" : ""}`} disabled={busy !== null} onClick={() => void updateRoles(member, { isPm: !member.isPm, isSupervisor: member.isSupervisor, isSoftwareManager: member.isSoftwareManager })}>{member.isPm ? "✓ " : ""}项目 PM</button>
+                        <button type="button" className={`role-pill ${member.isSupervisor ? "on" : ""}`} disabled={busy !== null} onClick={() => void updateRoles(member, { isPm: member.isPm, isSupervisor: !member.isSupervisor, isSoftwareManager: member.isSoftwareManager })}>{member.isSupervisor ? "✓ " : ""}项目主管</button>
+                        <button type="button" className={`role-pill ${member.isSoftwareManager ? "on" : ""}`} disabled={busy !== null} onClick={() => void updateRoles(member, { isPm: member.isPm, isSupervisor: member.isSupervisor, isSoftwareManager: !member.isSoftwareManager })}>{member.isSoftwareManager ? "✓ " : ""}软件经理</button>
                         {busy === `role-${member.userId}` ? <LoaderCircle size={13} className="spin" /> : null}
                       </div>
                     ) : (
                       <div className="chip-list">
                         {member.isPm ? <span className="badge badge-teal">项目 PM</span> : null}
                         {member.isSupervisor ? <span className="badge badge-blue">项目主管</span> : null}
-                        {!member.isPm && !member.isSupervisor ? <span className="badge badge-neutral">成员</span> : null}
+                        {member.isSoftwareManager ? <span className="badge badge-amber">软件经理</span> : null}
+                        {!member.isPm && !member.isSupervisor && !member.isSoftwareManager ? <span className="badge badge-neutral">成员</span> : null}
                       </div>
                     )}
                   </td>

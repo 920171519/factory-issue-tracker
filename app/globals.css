@@ -660,6 +660,12 @@ ul, ol { margin: 0; }
 .packages-settings .section-title { margin-bottom: 2px; }
 .promote-check { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--ink-soft); white-space: nowrap; }
 .organize-summary { background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.organize-barcodes { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.organize-barcode-row { display: grid; grid-template-columns: minmax(150px, auto) 72px minmax(0, 1fr); gap: 8px; align-items: center; }
+.organize-barcode-row .mono { font-size: 11.5px; }
+.organize-barcode-row .input { min-height: 30px; padding: 4px 8px; font-size: 11.5px; }
+.packages-tracking-table .mini-meta, .packages-barcode-table .mini-meta { white-space: nowrap; }
+.packages-tracking-table td, .packages-barcode-table td { font-size: 11px; }
 /* 软件包历史时间线（与问题历史 .history-* 区分） */
 .pkg-history-summary { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; background: var(--surface-soft); display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .pkg-history-versions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; }

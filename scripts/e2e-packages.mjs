@@ -121,6 +121,9 @@ try {
   const pkgAfterBatch = afterBatch.data.packages.find((entry) => entry.id === packageId);
   assert.equal(pkgAfterBatch.testVersion, "1.1");
   assert.equal(pkgAfterBatch.status, "IN_TEST");
+  assert.equal(afterBatch.data.stats.openTest, 1, "在测跟踪应包含未出结论的转测包");
+  assert.equal(afterBatch.data.openTestItems[0].packageId, packageId);
+  assert.match(afterBatch.data.openTestItems[0].submittedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, "转测时间应精确到秒");
   step("组织转测试批次并生成全量配套表与版本差异");
 
   // 6. 测试结论
@@ -132,39 +135,47 @@ try {
     action: "conclude", itemId: testItem.id, conclusion: "PASS", note: "自动化校验通过",
   });
   assert.equal(testConclusion.status, 200, `测试结论失败：${JSON.stringify(testConclusion.data)}`);
-  step("录入测试结论（必填说明校验）");
+  const afterConclusion = await call("GET", `/api/projects/${projectId}/packages`);
+  assert.equal(afterConclusion.data.stats.openTest, 0, "出结论后应移出在测列表");
+  step("录入测试结论（必填说明校验、在测列表移除）");
 
   // 7. 转验证申请
   const verifyRequest = await call("POST", `/api/projects/${projectId}/package-requests`, {
     kind: "VERIFY", packageId, version: "1.1", sourceItemId: testItem.id, changeSummary: "E2E 转验证",
   });
   assert.equal(verifyRequest.status, 201, `提交转验证申请失败：${JSON.stringify(verifyRequest.data)}`);
+  const missingBarcodes = await call("POST", `/api/projects/${projectId}/package-batches`, {
+    kind: "VERIFY", requestIds: [verifyRequest.data.id], title: "缺少条码",
+  });
+  assert.equal(missingBarcodes.status, 400, "组织转验证未填条码应 400");
   const verifyBatch = await call("POST", `/api/projects/${projectId}/package-batches`, {
-    kind: "VERIFY", requestIds: [verifyRequest.data.id], title: "E2E 第一次转验证",
+    kind: "VERIFY",
+    requestIds: [verifyRequest.data.id],
+    title: "E2E 第一次转验证",
+    barcodes: [{ requestId: verifyRequest.data.id, barcodes: ["E2E-BAR-1", "E2E-BAR-2", "E2E-BAR-1"] }],
   });
   assert.equal(verifyBatch.status, 201, `组织转验证批次失败：${JSON.stringify(verifyBatch.data)}`);
   assert.match(verifyBatch.data.code, /^V-\d{4}-\d{3}$/, "验证批次号格式应为 V-YYYY-NNN");
-  step("测试通过后提交转验证并组织转验证批次");
+  step("测试通过后提交转验证，组织时必须填写验证条码");
 
   const afterVerifyBatch = await call("GET", `/api/projects/${projectId}/packages`);
   const verifyBatchView = afterVerifyBatch.data.verifyBatches.find((batch) => batch.id === verifyBatch.data.batchId);
   assert.equal(verifyBatchView.items.length, 1, "转验证批次只包含被申请的软件包");
   const verifyItem = verifyBatchView.items[0];
+  assert.deepEqual(verifyItem.barcodes, ["E2E-BAR-1", "E2E-BAR-2"], "条码应在组织时去重保存");
+  assert.equal(afterVerifyBatch.data.barcodeLedger.length, 2, "条码台账应按条码展开");
+  assert.equal(afterVerifyBatch.data.barcodeLedger[0].packageId, packageId);
+  assert.equal(afterVerifyBatch.data.barcodeLedger[0].conclusion, "PENDING");
 
-  // 8. 多條码 + 验证结论
-  const barcodes = await call("PATCH", `/api/projects/${projectId}/package-batches/${verifyBatch.data.batchId}`, {
-    action: "barcodes", itemId: verifyItem.id, barcodes: ["E2E-BAR-1", "E2E-BAR-2", "E2E-BAR-1"],
-  });
-  assert.equal(barcodes.status, 200, `绑定条码失败：${JSON.stringify(barcodes.data)}`);
+  // 8. 验证结论
   const verifyConclusion = await call("PATCH", `/api/projects/${projectId}/package-batches/${verifyBatch.data.batchId}`, {
     action: "conclude", itemId: verifyItem.id, conclusion: "PASS", note: "正式服务器验证通过",
   });
   assert.equal(verifyConclusion.status, 200, `验证结论失败：${JSON.stringify(verifyConclusion.data)}`);
-  const withBarcodes = await call("GET", `/api/projects/${projectId}/packages`);
-  const savedItem = withBarcodes.data.verifyBatches.find((batch) => batch.id === verifyBatch.data.batchId).items[0];
-  assert.deepEqual(savedItem.barcodes, ["E2E-BAR-1", "E2E-BAR-2"], "条码应去重保存");
-  assert.equal(withBarcodes.data.promoteCandidates.length, 1, "验证通过后应出现可转正条目");
-  step("绑定多个验证条码并录入验证结论");
+  const withConclusion = await call("GET", `/api/projects/${projectId}/packages`);
+  assert.equal(withConclusion.data.promoteCandidates.length, 1, "验证通过后应出现可转正条目");
+  assert.equal(withConclusion.data.barcodeLedger[0].conclusion, "PASS");
+  step("录入验证结论，条码台账同步验证结果");
 
   // 9. 转正
   const promote = await call("PATCH", `/api/projects/${projectId}/package-batches/${verifyBatch.data.batchId}`, {
@@ -177,6 +188,7 @@ try {
   assert.equal(promotedPackage.officialVersion, "1.1", "转正后正式版本应更新");
   assert.equal(promotedPackage.status, "OFFICIAL");
   assert.equal(finalPayload.data.promoteCandidates.length, 0);
+  assert.equal(finalPayload.data.barcodeLedger[0].promoted, true, "条码台账应反映已转正");
   step("验证通过后转正，正式版本号更新");
 
   // 10. 历史
@@ -189,7 +201,31 @@ try {
   assert.equal(history.data.package.officialVersion, "1.1");
   step("历史记录包含申请、批次、结论、条码与转正");
 
-  // 11. 非项目成员访问被拒绝
+  // 11. 软件经理角色：可提交任意责任组的包并组织批次
+  const added = await call("POST", `/api/projects/${projectId}/members`, { employeeNo: "c00000004" });
+  assert.equal(added.status, 201, `添加成员失败：${JSON.stringify(added.data)}`);
+  const roleSet = await call("PATCH", `/api/projects/${projectId}/members/${added.data.member.userId}`, {
+    isPm: false, isSupervisor: false, isSoftwareManager: true,
+  });
+  assert.equal(roleSet.status, 200, `设置软件经理角色失败：${JSON.stringify(roleSet.data)}`);
+  cookie = "";
+  const managerLogin = await call("POST", "/api/auth/login", { employeeNo: "c00000004", password: "Demo1234" });
+  assert.equal(managerLogin.status, 200, "软件经理登录失败");
+  const managerRequest = await call("POST", `/api/projects/${projectId}/package-requests`, {
+    kind: "TEST", packageId, version: "1.2", changeSummary: "软件经理提交", packageUrl: "\\\\share\\e2e\\1.2",
+  });
+  assert.equal(managerRequest.status, 201, `软件经理提交申请失败：${JSON.stringify(managerRequest.data)}`);
+  const managerBatch = await call("POST", `/api/projects/${projectId}/package-batches`, {
+    kind: "TEST", requestIds: [managerRequest.data.id], title: "软件经理组织的批次",
+  });
+  assert.equal(managerBatch.status, 201, `软件经理组织批次失败：${JSON.stringify(managerBatch.data)}`);
+  assert.match(managerBatch.data.code, /^T-\d{4}-002$/, "应为第二个转测试批次");
+  const managerPayload = await call("GET", `/api/projects/${projectId}/packages`);
+  assert.equal(managerPayload.data.packages.find((entry) => entry.id === packageId).testVersion, "1.2");
+  assert.equal(managerPayload.data.stats.openTest, 1, "新批次进入在测跟踪");
+  step("软件经理可提交任意责任组的包并组织批次");
+
+  // 12. 非项目成员访问被拒绝
   cookie = "";
   const outsiderLogin = await call("POST", "/api/auth/login", { employeeNo: "c00000003", password: "Demo1234" });
   assert.equal(outsiderLogin.status, 200);
@@ -201,7 +237,7 @@ try {
   assert.equal(outsiderWrite.status, 404, `非成员提交应 404，实际 ${outsiderWrite.status}`);
   step("非项目成员读写均被拒绝");
 
-  // 12. 清理临时项目
+  // 13. 清理临时项目
   const db = new Database(DB_PATH);
   db.pragma("foreign_keys = ON");
   db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);

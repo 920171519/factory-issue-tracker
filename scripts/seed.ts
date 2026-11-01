@@ -14,7 +14,6 @@ import {
   createBatch,
   createPackage,
   createRequest,
-  setItemBarcodes,
   setTesterGroup,
   updatePackage,
 } from "../lib/packages";
@@ -45,6 +44,7 @@ const PEOPLE: Person[] = [
   { key: "repairLeader", name: "孙磊", employeeNo: "r00000009" },
   { key: "retestLeader", name: "吴倩", employeeNo: "t00000010" },
   { key: "tester", name: "郑一", employeeNo: "q00000011" },
+  { key: "softwareManager", name: "周敏", employeeNo: "m00000012" },
 ];
 
 async function ensureUser(person: Person): Promise<string> {
@@ -92,6 +92,8 @@ async function seedPackageDemo(
 ): Promise<void> {
   const db = getDb();
   setTesterGroup(projectId, ids.pm, groups.retest);
+  ensureProjectMember(projectId, ids.pm, ids.softwareManager);
+  updateProjectMemberRoles(projectId, ids.pm, ids.softwareManager, { isPm: false, isSupervisor: false, isSoftwareManager: true });
 
   // 历史编码补责任组（编码清单已迁移为软件包管理）
   const legacy = db.prepare("SELECT id, code FROM code_list WHERE project_id = ?").all(projectId) as { id: string; code: string }[];
@@ -188,23 +190,40 @@ async function seedPackageDemo(
     title: "11 月第一次转验证",
     scheduledDate: todayLocal(),
     note: "正式服务器 A-01 验证主板 Rev.B3。",
+    barcodes: [{ requestId: verifyRequest.id, barcodes: ["XH-CPU-2601001", "XH-MIX-2601003"] }],
   });
   const verifyItem = db
     .prepare("SELECT id FROM package_batch_items WHERE batch_id = ? AND package_id = ?")
     .get(verifyBatch.batchId, board) as { id: string } | undefined;
   if (!verifyItem) throw new Error("演示验证条目缺失");
-  setItemBarcodes(projectId, verifyBatch.batchId, verifyItem.id, ids.retestLeader, ["XH-CPU-2601001", "XH-MIX-2601003"]);
   concludeItem(projectId, verifyBatch.batchId, verifyItem.id, ids.retestLeader, {
     conclusion: "PASS",
     note: "正式服务器条码 XH-CPU-2601001 与 XH-MIX-2601003 连续运行 48 小时无异常，可转正。",
   });
 
-  createRequest(projectId, ids.retestLeader, {
+  // 第二次转测：CPLD 已组织但尚未出结论，用于演示「在测跟踪」跨批次视图。
+  const cpldRequest = createRequest(projectId, ids.retestLeader, {
     kind: "TEST",
     packageId: cpld,
     version: "Rev.A2",
     changeSummary: "调整上电时序，缩短 PCIe 复位等待时间。",
     packageUrl: "\\\\share\\release\\XH-CPLD-LOGIC\\Rev.A2",
+  });
+  createBatch(projectId, ids.pm, {
+    kind: "TEST",
+    requestIds: [cpldRequest.id],
+    title: "11 月第二次转测",
+    scheduledDate: todayLocal(),
+    note: "第一批尚未全部验证完成，第二批单独转 CPLD。",
+  });
+
+  // 仍待组织的下一次转测申请（演示待办队列）。
+  createRequest(projectId, ids.cpuMember, {
+    kind: "TEST",
+    packageId: bios,
+    version: "Rev.C2",
+    changeSummary: "补充风扇联动曲线，修复待机噪音偏大问题。",
+    packageUrl: "\\\\share\\release\\XH-BIOS-FW\\Rev.C2",
   });
 }
 
@@ -405,6 +424,7 @@ async function main() {
   console.log("  r00000009   孙磊        维修组负责人");
   console.log("  t00000010   吴倩        复测组负责人");
   console.log("  q00000011   郑一        测试录入人（普通项目成员）");
+  console.log("  m00000012   周敏        软件经理（组织转测试/转验证批次）");
   console.log("\n登录地址：http://localhost:3000/login");
 }
 

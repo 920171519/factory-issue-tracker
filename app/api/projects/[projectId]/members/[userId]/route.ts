@@ -6,6 +6,7 @@ import { removeProjectMember, updateProjectMemberRoles } from "@/lib/projects";
 const schema = z.object({
   isPm: z.boolean(),
   isSupervisor: z.boolean(),
+  isSoftwareManager: z.boolean().optional(),
 });
 
 export async function PATCH(

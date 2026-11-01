@@ -382,4 +382,5 @@
   .batch-list { padding: 10px; }
   .wrap-cell { max-width: 200px; }
   .batch-head { gap: 7px; }
+  .organize-barcode-row { grid-template-columns: 1fr; gap: 3px; }
 }

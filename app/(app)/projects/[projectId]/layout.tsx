@@ -26,6 +26,7 @@ export default async function ProjectLayout({
         projectCode={access.project.code}
         isPm={access.isPm}
         isSupervisor={access.isSupervisor}
+        isSoftwareManager={access.isSoftwareManager}
         isGroupLeader={access.isGroupLeader}
         pendingApprovals={pendingApprovals}
       />

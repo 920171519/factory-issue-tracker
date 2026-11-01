@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS project_members (
   user_id TEXT NOT NULL REFERENCES users(id),
   is_pm INTEGER NOT NULL DEFAULT 0,
   is_supervisor INTEGER NOT NULL DEFAULT 0,
+  is_software_manager INTEGER NOT NULL DEFAULT 0,
   joined_at TEXT NOT NULL,
   PRIMARY KEY (project_id, user_id)
 );
@@ -393,6 +394,7 @@ export function createDatabase(filePath = databasePath()): AppDatabase {
   db.exec(SCHEMA);
   ensureColumn(db, "users", "is_system_admin", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "projects", "tester_group_id", "TEXT");
+  ensureColumn(db, "project_members", "is_software_manager", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "code_list", "group_id", "TEXT");
   ensureColumn(db, "code_list", "test_version", "TEXT");
   ensureColumn(db, "code_list", "verification_version", "TEXT");

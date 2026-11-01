@@ -88,7 +88,7 @@ export function HistoryDialog({
                   </div>
                   <div className="pkg-history-detail">{event.detail}</div>
                   <div className="pkg-history-meta">
-                    <History size={11} /> {formatDateTime(event.at)}
+                    <History size={11} /> {formatDateTime(event.at, { seconds: true })}
                     {event.operatorName ? <> · {event.operatorName}</> : null}
                   </div>
                 </div>

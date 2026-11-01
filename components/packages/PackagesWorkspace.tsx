@@ -5,6 +5,7 @@ import {
   Boxes,
   CheckCircle2,
   Clock,
+  FlaskConical,
   GitBranch,
   LoaderCircle,
   Package,
@@ -18,12 +19,13 @@ import type { PackageStatus, PackagesPayload, PackageOverview } from "@/lib/pack
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import { useToast } from "@/components/Toast";
 import { Modal } from "@/components/Modal";
-import { ConclusionBadge, EmptyHint, StatusBadge, VersionText } from "@/components/packages/shared";
+import { ChangeFlag, ConclusionBadge, EmptyHint, StatusBadge, VersionText } from "@/components/packages/shared";
 import { TestFlow } from "@/components/packages/TestFlow";
 import { VerifyFlow } from "@/components/packages/VerifyFlow";
 import { HistoryDialog } from "@/components/packages/HistoryDialog";
+import { formatDateTime } from "@/lib/time";
 
-type TabKey = "overview" | "test" | "verify";
+type TabKey = "overview" | "tracking" | "test" | "verify";
 
 const STATUS_ORDER: PackageStatus[] = [
   "TEST_PENDING",
@@ -52,7 +54,13 @@ export function PackagesWorkspace({
   const [statusFilter, setStatusFilter] = useState("");
   const [editor, setEditor] = useState<{ mode: "create" } | { mode: "edit"; pkg: PackageOverview } | null>(null);
   const [historyPackage, setHistoryPackage] = useState<{ id: string; code: string } | null>(null);
-  const [testerSaving, setTesterSaving] = useState(false);
+  const [now, setNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const load = useCallback(async () => {
     setError("");
@@ -88,21 +96,15 @@ export function PackagesWorkspace({
   const pendingTest = data?.pendingTestRequests.length || 0;
   const pendingVerify = data?.pendingVerifyRequests.length || 0;
   const readyCount = data?.promoteCandidates.length || 0;
+  const openTestCount = data?.openTestItems.length || 0;
 
-  async function saveTesterGroup(groupId: string) {
-    setTesterSaving(true);
-    try {
-      await apiFetch(`/api/projects/${projectId}/packages/settings`, {
-        method: "PATCH",
-        body: JSON.stringify({ testerGroupId: groupId || null }),
-      });
-      toast.success("测试责任组已更新");
-      await reload();
-    } catch (saveError) {
-      toast.error(errorMessage(saveError));
-    } finally {
-      setTesterSaving(false);
-    }
+  function waitedFor(iso: string): string {
+    if (!now) return "—";
+    const diff = now - new Date(iso).getTime();
+    if (diff < 0) return "—";
+    const hours = Math.floor(diff / 3_600_000);
+    if (hours < 24) return `${hours} 小时`;
+    return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
   }
 
   if (loading) {
@@ -129,14 +131,9 @@ export function PackagesWorkspace({
           <div className="page-kicker">Release Pipeline</div>
           <h1 className="page-title">软件包管理</h1>
           <p className="page-sub">
-            责任组成员提交转测试申请 → 负责人统一组织转测试批次（生成全量配套表）→ 测试责任组给出验收结论 →
-            提交人申请转验证 → 负责人组织正式服务器验证（逐包绑定条码）→ 验证通过后统一转正。每次转测/验证都保留完整历史与版本差异。
+            项目成员为本人责任组的软件包提交转测试申请 → 软件经理 / 项目 PM / 项目主管统一组织转测试批次（生成全量配套表）→
+            测试责任组给出验收结论 → 该包责任组成员提交转验证申请 → 组织验证时逐包填写验证条码 → 验证通过后由 PM / 主管统一转正。
           </p>
-        </div>
-        <div className="header-actions">
-          <span className="badge badge-outline">
-            测试责任组：{data.testerGroup ? data.testerGroup.name : "未设置"}
-          </span>
         </div>
       </div>
 
@@ -148,8 +145,8 @@ export function PackagesWorkspace({
         </div>
         <div className="card metric-card">
           <div className="metric-label"><Clock size={15} /> 测试中</div>
-          <div className="metric-value">{data.stats.inTest}</div>
-          <div className="metric-note">已纳入转测试批次、等待验收结论</div>
+          <div className="metric-value">{openTestCount}</div>
+          <div className="metric-note">跨批次在测包数（含前一批未完成的包）</div>
         </div>
         <div className="card metric-card">
           <div className="metric-label"><GitBranch size={15} /> 验证中</div>
@@ -171,6 +168,9 @@ export function PackagesWorkspace({
       <div className="tabbar packages-tabs" role="tablist" aria-label="软件包管理标签页">
         <button type="button" role="tab" aria-selected={tab === "overview"} className={`tab ${tab === "overview" ? "active" : ""}`} onClick={() => setTab("overview")}>
           <Package size={14} /> 软件包总览
+        </button>
+        <button type="button" role="tab" aria-selected={tab === "tracking"} className={`tab ${tab === "tracking" ? "active" : ""}`} onClick={() => setTab("tracking")}>
+          <FlaskConical size={14} /> 在测跟踪 {openTestCount ? <span className="tab-count">{openTestCount}</span> : null}
         </button>
         <button type="button" role="tab" aria-selected={tab === "test"} className={`tab ${tab === "test" ? "active" : ""}`} onClick={() => setTab("test")}>
           <Clock size={14} /> 转测试 {pendingTest ? <span className="tab-count">{pendingTest}</span> : null}
@@ -309,29 +309,64 @@ export function PackagesWorkspace({
               </table>
             </div>
           </div>
+        </section>
+      ) : null}
 
-          <div className="card card-pad packages-settings">
-            <div className="packages-settings-row">
+      {tab === "tracking" ? (
+        <section className="packages-panel" role="tabpanel" aria-label="在测跟踪">
+          <div className="card">
+            <div className="card-header">
               <div>
-                <h2 className="section-title">测试责任组</h2>
-                <div className="section-sub">该责任组成员负责查看转测试配套表并给出验收结论；同时可组织转测试/转验证批次。</div>
+                <h2 className="section-title">在测配套包（尚未出测试结论）</h2>
+                <div className="section-sub">
+                  跨批次汇总所有已转测但还没有测试结论的软件包。连续多次转测时，前一批未完成的包会一直保留在这里；「转测时间」精确到秒。
+                </div>
               </div>
-              <span className="spacer" />
-              {data.permissions.canManage ? (
-                <select
-                  className="select"
-                  style={{ maxWidth: 220 }}
-                  value={data.testerGroup?.id || ""}
-                  disabled={testerSaving}
-                  onChange={(event) => void saveTesterGroup(event.target.value)}
-                  aria-label="测试责任组"
-                >
-                  <option value="">未设置</option>
-                  {data.groups.filter((group) => group.enabled).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
-                </select>
-              ) : (
-                <span className="badge badge-outline">{data.testerGroup ? data.testerGroup.name : "未设置"}</span>
-              )}
+              <span className="badge badge-outline">{data.openTestItems.length} 个在测</span>
+            </div>
+            <div className="table-wrap">
+              <table className="table packages-tracking-table">
+                <thead>
+                  <tr>
+                    <th>软件包</th>
+                    <th>责任组</th>
+                    <th>转测批次</th>
+                    <th>转测版本</th>
+                    <th>较正式</th>
+                    <th>较上批</th>
+                    <th>转测时间</th>
+                    <th>入批时间</th>
+                    <th>已等待</th>
+                    <th>提交人</th>
+                    <th>测试状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.openTestItems.length === 0 ? (
+                    <tr><td colSpan={11}><EmptyHint title="当前没有在测的配套包" description="测试批次内的转测包全部给出结论后，会自动从本列表移除。" /></td></tr>
+                  ) : data.openTestItems.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        <div className="main-cell mono">{item.packageCode}</div>
+                        {item.packageName && item.packageName !== item.packageCode ? <div className="cell-sub">{item.packageName}</div> : null}
+                      </td>
+                      <td>{item.groupName ? <span className="chip">{item.groupName}</span> : <span className="hint">未分配</span>}</td>
+                      <td>
+                        <span className="mono">{item.batchCode}</span>
+                        {item.batchTitle ? <div className="cell-sub">{item.batchTitle}</div> : null}
+                      </td>
+                      <td><VersionText value={item.version} /></td>
+                      <td><ChangeFlag changed={item.updatedVsOfficial} title={`正式版本：${item.officialVersion || "—"}`} /></td>
+                      <td><ChangeFlag changed={item.updatedVsPrevious} title={`上一批版本：${item.previousVersion || "—"}`} /></td>
+                      <td className="mini-meta mono">{formatDateTime(item.submittedAt, { seconds: true })}</td>
+                      <td className="mini-meta mono">{formatDateTime(item.batchCreatedAt, { seconds: true })}</td>
+                      <td className="mini-meta">{waitedFor(item.batchCreatedAt)}</td>
+                      <td>{item.submittedByName || <span className="hint">—</span>}</td>
+                      <td><ConclusionBadge conclusion={item.conclusion} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </section>
@@ -342,7 +377,7 @@ export function PackagesWorkspace({
       ) : null}
 
       {tab === "verify" ? (
-        <VerifyFlow projectId={projectId} payload={data} onChanged={reload} />
+        <VerifyFlow projectId={projectId} payload={data} currentUserId={currentUser.id} onChanged={reload} />
       ) : null}
 
       {editor ? (

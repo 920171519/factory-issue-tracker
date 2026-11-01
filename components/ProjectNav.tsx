@@ -24,11 +24,12 @@ interface ProjectNavProps {
   projectCode: string | null;
   isPm: boolean;
   isSupervisor: boolean;
+  isSoftwareManager: boolean;
   isGroupLeader: boolean;
   pendingApprovals: number;
 }
 
-export function ProjectNav({ projectId, projectName, projectCode, isPm, isSupervisor, isGroupLeader, pendingApprovals }: ProjectNavProps) {
+export function ProjectNav({ projectId, projectName, projectCode, isPm, isSupervisor, isSoftwareManager, isGroupLeader, pendingApprovals }: ProjectNavProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   useEffect(() => {
@@ -78,8 +79,9 @@ export function ProjectNav({ projectId, projectName, projectCode, isPm, isSuperv
         <div className="project-role">
           {isPm ? <span>项目 PM</span> : null}
           {isSupervisor ? <span>项目主管</span> : null}
+          {isSoftwareManager ? <span>软件经理</span> : null}
           {isGroupLeader ? <span>责任组负责人</span> : null}
-          {!isPm && !isSupervisor && !isGroupLeader ? <span>项目成员</span> : null}
+          {!isPm && !isSupervisor && !isSoftwareManager && !isGroupLeader ? <span>项目成员</span> : null}
         </div>
       </div>
       <div className="sidebar-label">工作台</div>

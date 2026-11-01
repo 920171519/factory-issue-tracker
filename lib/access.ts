@@ -16,6 +16,7 @@ export interface ProjectAccess {
   project: ProjectRow;
   isPm: boolean;
   isSupervisor: boolean;
+  isSoftwareManager: boolean;
   isGroupLeader: boolean;
   groupIds: string[];
   leaderGroupIds: string[];
@@ -30,8 +31,8 @@ export function getProjectAccess(userId: string, projectId: string): ProjectAcce
   const project = getProject(projectId);
   if (!project) return null;
   const member = db
-    .prepare("SELECT is_pm, is_supervisor FROM project_members WHERE project_id = ? AND user_id = ?")
-    .get(projectId, userId) as { is_pm: number; is_supervisor: number } | undefined;
+    .prepare("SELECT is_pm, is_supervisor, is_software_manager FROM project_members WHERE project_id = ? AND user_id = ?")
+    .get(projectId, userId) as { is_pm: number; is_supervisor: number; is_software_manager: number } | undefined;
   if (!member) return null;
   const groups = db
     .prepare(
@@ -44,6 +45,7 @@ export function getProjectAccess(userId: string, projectId: string): ProjectAcce
     project,
     isPm: member.is_pm === 1,
     isSupervisor: member.is_supervisor === 1,
+    isSoftwareManager: member.is_software_manager === 1,
     isGroupLeader: groups.some((g) => g.is_leader === 1),
     groupIds: groups.map((g) => g.group_id),
     leaderGroupIds: groups.filter((g) => g.is_leader === 1).map((g) => g.group_id),
@@ -115,6 +117,7 @@ export function getProjectMemberCount(projectId: string): number {
 export interface AccessPayload {
   isPm: boolean;
   isSupervisor: boolean;
+  isSoftwareManager: boolean;
   isGroupLeader: boolean;
   leaderGroupIds: string[];
   groupIds: string[];
@@ -124,6 +127,7 @@ export function accessPayload(access: ProjectAccess): AccessPayload {
   return {
     isPm: access.isPm,
     isSupervisor: access.isSupervisor,
+    isSoftwareManager: access.isSoftwareManager,
     isGroupLeader: access.isGroupLeader,
     leaderGroupIds: access.leaderGroupIds,
     groupIds: access.groupIds,

@@ -139,6 +139,7 @@ export interface BatchItemView {
   packageId: string;
   packageCode: string;
   packageName: string | null;
+  groupId: string | null;
   groupName: string | null;
   ownerName: string | null;
   officialVersion: string | null;
@@ -179,15 +180,57 @@ export interface BatchView {
   items: BatchItemView[];
 }
 
+/** 转测后尚未出结论的配套包（跨批次，用于「在测跟踪」）。 */
+export interface OpenTestItem {
+  id: string;
+  batchId: string;
+  batchCode: string;
+  batchTitle: string;
+  scheduledDate: string | null;
+  batchCreatedAt: string;
+  packageId: string;
+  packageCode: string;
+  packageName: string | null;
+  groupName: string | null;
+  version: string | null;
+  officialVersion: string | null;
+  updatedVsOfficial: boolean;
+  updatedVsPrevious: boolean;
+  previousVersion: string | null;
+  submittedById: string | null;
+  submittedByName: string | null;
+  submittedAt: string | null;
+  conclusion: Conclusion;
+}
+
+/** 验证条码台账：按条码查看所属软件包与验证结论。 */
+export interface BarcodeEntry {
+  barcode: string;
+  packageId: string;
+  packageCode: string;
+  packageName: string | null;
+  groupName: string | null;
+  version: string | null;
+  batchId: string;
+  batchCode: string;
+  conclusion: Conclusion;
+  concludedAt: string | null;
+  promoted: boolean;
+  promotedAt: string | null;
+}
+
 export interface PackagePermissions {
   isPm: boolean;
   isSupervisor: boolean;
+  isSoftwareManager: boolean;
   isTester: boolean;
   testerGroupLeader: boolean;
   canManage: boolean;
   canOrganize: boolean;
   canConclude: boolean;
   canPromote: boolean;
+  /** PM / 主管 / 软件经理可以为任意责任组的软件包提交申请。 */
+  canSubmitAny: boolean;
   groupIds: string[];
 }
 
@@ -203,6 +246,8 @@ export interface PackagesPayload {
   verifyBatches: BatchView[];
   promoteCandidates: BatchItemView[];
   verifyRequestCandidates: BatchItemView[];
+  openTestItems: OpenTestItem[];
+  barcodeLedger: BarcodeEntry[];
   stats: {
     total: number;
     official: number;
@@ -211,6 +256,7 @@ export interface PackagesPayload {
     ready: number;
     pendingTest: number;
     pendingVerify: number;
+    openTest: number;
   };
 }
 
@@ -281,22 +327,25 @@ export function permissionsFor(projectId: string, userId: string): PackagePermis
   const leaders = groupLeaderIds(projectId, userId);
   const isTester = isTesterGroupMember(projectId, userId);
   const testerGroupLeader = Boolean(tester && leaders.includes(tester.id));
+  const canSubmitAny = access.isPm || access.isSupervisor || access.isSoftwareManager;
   return {
     isPm: access.isPm,
     isSupervisor: access.isSupervisor,
+    isSoftwareManager: access.isSoftwareManager,
     isTester,
     testerGroupLeader,
     canManage: access.isPm,
-    canOrganize: access.isPm || access.isSupervisor || testerGroupLeader,
+    canOrganize: access.isPm || access.isSupervisor || access.isSoftwareManager,
     canConclude: isTester || access.isPm || access.isSupervisor,
     canPromote: access.isPm || access.isSupervisor,
+    canSubmitAny,
     groupIds: access.groupIds,
   };
 }
 
 function requireOrganize(projectId: string, userId: string): PackagePermissions {
   const permissions = permissionsFor(projectId, userId);
-  if (!permissions.canOrganize) throw new AppError(403, "仅项目 PM、项目主管或测试责任组负责人可组织批次");
+  if (!permissions.canOrganize) throw new AppError(403, "仅软件经理、项目 PM 或项目主管可组织转测试/转验证批次");
   return permissions;
 }
 
@@ -313,9 +362,11 @@ function requirePromote(projectId: string, userId: string): PackagePermissions {
 }
 
 function assertCanSubmitForPackage(access: ProjectAccess, packageGroupId: string | null): void {
-  if (access.isPm || access.isSupervisor) return;
+  if (access.isPm || access.isSupervisor || access.isSoftwareManager) return;
   if (!packageGroupId) throw new AppError(400, "该软件包尚未指定责任组，请联系项目 PM 补充");
-  if (!access.groupIds.includes(packageGroupId)) throw new AppError(403, "仅该软件包所属责任组成员可提交申请");
+  if (!access.groupIds.includes(packageGroupId)) {
+    throw new AppError(403, "只能选择自己责任组内的软件包");
+  }
 }
 
 /* ----------------------------- 软件包 ----------------------------- */
@@ -487,8 +538,8 @@ export function createRequest(
     if (!item || item.kind !== "TEST") throw new AppError(404, "转测记录不存在");
     if (item.packageId !== pkg.id) throw new AppError(400, "转验证申请必须对应该软件包的转测记录");
     if (item.conclusion !== "PASS") throw new AppError(400, "仅测试结论为「通过」的转测记录可申请转验证");
-    if (!access.isPm && !access.isSupervisor && item.submittedBy !== userId && !access.leaderGroupIds.includes(pkg.groupId || "")) {
-      throw new AppError(403, "仅原转测申请人、该责任组负责人或项目 PM/主管可提交转验证申请");
+    if (!access.isPm && !access.isSupervisor && !access.isSoftwareManager && item.submittedBy !== userId && !access.groupIds.includes(pkg.groupId || "")) {
+      throw new AppError(403, "仅该软件包所属责任组成员、原转测申请人或项目 PM/主管/软件经理可提交转验证申请");
     }
     const duplicate = db
       .prepare(
@@ -536,7 +587,15 @@ function nextBatchSeq(projectId: string, kind: PackageKind): number {
 export function createBatch(
   projectId: string,
   userId: string,
-  input: { kind: PackageKind; requestIds: string[]; title?: string; scheduledDate?: string | null; note?: string },
+  input: {
+    kind: PackageKind;
+    requestIds: string[];
+    title?: string;
+    scheduledDate?: string | null;
+    note?: string;
+    /** 转验证批次组织时必须为每个软件包填写验证条码。 */
+    barcodes?: { requestId: string; barcodes: string[] }[];
+  },
 ): { batchId: string; code: string } {
   requireOrganize(projectId, userId);
   const db = getDb();
@@ -546,15 +605,19 @@ export function createBatch(
 
   const requests = db
     .prepare(
-      `SELECT r.id, r.kind, r.package_id AS packageId, r.version, r.change_summary AS changeSummary, r.package_url AS packageUrl,
+      `SELECT r.id, r.kind, r.package_id AS packageId, c.code AS packageCode, r.version,
+              r.change_summary AS changeSummary, r.package_url AS packageUrl,
               r.submitted_by AS submittedBy, u.name AS submittedByName
-       FROM package_requests r JOIN users u ON u.id = r.submitted_by
+       FROM package_requests r
+       JOIN code_list c ON c.id = r.package_id
+       JOIN users u ON u.id = r.submitted_by
        WHERE r.project_id = ? AND r.status = 'PENDING' AND r.id IN (${ids.map(() => "?").join(",")})`,
     )
     .all(projectId, ...ids) as {
     id: string;
     kind: PackageKind;
     packageId: string;
+    packageCode: string;
     version: string;
     changeSummary: string;
     packageUrl: string | null;
@@ -563,6 +626,22 @@ export function createBatch(
   }[];
   if (requests.length !== ids.length) throw new AppError(400, "部分申请已被处理或已撤回，请刷新后重试");
   if (requests.some((request) => request.kind !== kind)) throw new AppError(400, "所选申请类型不一致");
+
+  // 转验证：组织批次时必须逐包填写验证条码，便于后续按条码跟踪验证结论。
+  const barcodeMap = new Map<string, string[]>();
+  if (kind === "VERIFY") {
+    for (const entry of input.barcodes || []) {
+      const normalized = [...new Set((entry.barcodes || []).map((code) => code.trim()).filter(Boolean))];
+      if (normalized.length === 0) continue;
+      if (normalized.length > 20) throw new AppError(400, "单个软件包最多绑定 20 个条码");
+      if (normalized.some((code) => code.length > 80)) throw new AppError(400, "条码过长");
+      barcodeMap.set(entry.requestId, normalized);
+    }
+    const missing = requests.filter((request) => (barcodeMap.get(request.id) || []).length === 0);
+    if (missing.length > 0) {
+      throw new AppError(400, `组织转验证时必须填写验证条码：${missing.map((request) => request.packageCode).join("、")}`);
+    }
+  }
 
   const requested = new Map(requests.map((request) => [request.packageId, request]));
   const packages = listCodeRows(projectId);
@@ -600,7 +679,7 @@ export function createBatch(
        updated_vs_official, updated_vs_previous, previous_version, request_id, change_summary, package_url, submitted_by,
        submitted_by_name, conclusion, conclusion_note, concluded_by, concluded_by_name, concluded_at, barcodes,
        promoted, promoted_at, promoted_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', NULL, NULL, NULL, '[]', 0, NULL, NULL, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '', NULL, NULL, NULL, ?, 0, NULL, NULL, ?)`,
   );
 
   const setTestVersion = db.prepare("UPDATE code_list SET test_version = ?, updated_at = ? WHERE id = ?");
@@ -643,6 +722,7 @@ export function createBatch(
         request?.packageUrl || null,
         request?.submittedBy || null,
         request?.submittedByName || null,
+        JSON.stringify(request ? barcodeMap.get(request.id) || [] : []),
         createdAt,
       );
       if (request) {
@@ -769,6 +849,7 @@ export function toItemView(row: ItemRow): BatchItemView {
     packageId: row.package_id,
     packageCode: row.package_code,
     packageName: row.package_name,
+    groupId: row.group_id,
     groupName: row.group_name,
     ownerName: row.owner_name,
     officialVersion: row.official_version,
@@ -854,6 +935,85 @@ export function listBatches(projectId: string, kind: PackageKind): BatchView[] {
       items: rows.map(toItemView),
     };
   });
+}
+
+function listOpenTestItems(projectId: string): OpenTestItem[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT i.*, b.id AS batch_id, b.code AS batch_code, b.title AS batch_title,
+              b.scheduled_date AS scheduled_date, b.created_at AS batch_created_at,
+              r.submitted_at AS request_submitted_at
+       FROM package_batch_items i
+       JOIN package_batches b ON b.id = i.batch_id
+       LEFT JOIN package_requests r ON r.id = i.request_id
+       WHERE b.project_id = ? AND b.kind = 'TEST' AND i.request_id IS NOT NULL AND i.conclusion = 'PENDING'
+       ORDER BY b.seq DESC, i.package_code ASC`,
+    )
+    .all(projectId) as (ItemRow & { batch_title: string; scheduled_date: string | null })[];
+  return rows.map((row) => ({
+    id: row.id,
+    batchId: row.batch_id,
+    batchCode: row.batch_code || "",
+    batchTitle: row.batch_title || "",
+    scheduledDate: row.scheduled_date,
+    batchCreatedAt: row.batch_created_at || row.created_at,
+    packageId: row.package_id,
+    packageCode: row.package_code,
+    packageName: row.package_name,
+    groupName: row.group_name,
+    version: row.version,
+    officialVersion: row.official_version,
+    updatedVsOfficial: row.updated_vs_official === 1,
+    updatedVsPrevious: row.updated_vs_previous === 1,
+    previousVersion: row.previous_version,
+    submittedById: row.submitted_by,
+    submittedByName: row.submitted_by_name,
+    submittedAt: row.request_submitted_at ?? null,
+    conclusion: row.conclusion,
+  }));
+}
+
+function listBarcodeLedger(projectId: string): BarcodeEntry[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT i.id, i.package_id AS packageId, i.package_code AS packageCode, i.package_name AS packageName,
+              i.group_name AS groupName, i.version, i.barcodes, i.conclusion, i.concluded_at AS concludedAt,
+              i.promoted, i.promoted_at AS promotedAt,
+              b.id AS batchId, b.code AS batchCode
+       FROM package_batch_items i JOIN package_batches b ON b.id = i.batch_id
+       WHERE b.project_id = ? AND b.kind = 'VERIFY'
+       ORDER BY b.seq DESC, i.package_code ASC`,
+    )
+    .all(projectId) as {
+    packageId: string;
+    packageCode: string;
+    packageName: string | null;
+    groupName: string | null;
+    version: string | null;
+    barcodes: string;
+    conclusion: Conclusion;
+    concludedAt: string | null;
+    promoted: number;
+    promotedAt: string | null;
+    batchId: string;
+    batchCode: string;
+  }[];
+  return rows.flatMap((row) =>
+    parseBarcodes(row.barcodes).map((barcode) => ({
+      barcode,
+      packageId: row.packageId,
+      packageCode: row.packageCode,
+      packageName: row.packageName,
+      groupName: row.groupName,
+      version: row.version,
+      batchId: row.batchId,
+      batchCode: row.batchCode,
+      conclusion: row.conclusion,
+      concludedAt: row.concludedAt,
+      promoted: row.promoted === 1,
+      promotedAt: row.promotedAt,
+    })),
+  );
 }
 
 export function getPackagesPayload(projectId: string, userId: string): PackagesPayload {
@@ -943,6 +1103,7 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
     .map((entry) => entry.passedTest)
     .filter((item): item is ItemRow => Boolean(item))
     .map(toItemView);
+  const openTestItems = listOpenTestItems(projectId);
 
   return {
     packages,
@@ -956,6 +1117,8 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
     verifyBatches,
     promoteCandidates,
     verifyRequestCandidates,
+    openTestItems,
+    barcodeLedger: listBarcodeLedger(projectId),
     stats: {
       total: packages.length,
       official: packages.filter((pkg) => pkg.status === "OFFICIAL").length,
@@ -964,6 +1127,7 @@ export function getPackagesPayload(projectId: string, userId: string): PackagesP
       ready: packages.filter((pkg) => pkg.status === "READY").length,
       pendingTest: packages.filter((pkg) => pkg.status === "TEST_PENDING").length,
       pendingVerify: packages.filter((pkg) => pkg.status === "VERIFY_PENDING").length,
+      openTest: openTestItems.length,
     },
   };
 }

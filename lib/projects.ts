@@ -53,6 +53,7 @@ export interface ProjectMemberView {
   employeeNo: string;
   isPm: boolean;
   isSupervisor: boolean;
+  isSoftwareManager: boolean;
   joinedAt: string;
   groups: { id: string; name: string; isLeader: boolean }[];
   pending: number;
@@ -174,9 +175,9 @@ export function listProjectMembers(projectId: string): ProjectMemberView[] {
   const db = getDb();
   const members = db
     .prepare(
-      `SELECT u.id, u.name, u.employee_no, pm.is_pm, pm.is_supervisor, pm.joined_at
+      `SELECT u.id, u.name, u.employee_no, pm.is_pm, pm.is_supervisor, pm.is_software_manager, pm.joined_at
        FROM project_members pm JOIN users u ON u.id = pm.user_id
-       WHERE pm.project_id = ? ORDER BY pm.is_pm DESC, pm.is_supervisor DESC, u.name`,
+       WHERE pm.project_id = ? ORDER BY pm.is_pm DESC, pm.is_supervisor DESC, pm.is_software_manager DESC, u.name`,
     )
     .all(projectId) as {
     id: string;
@@ -184,6 +185,7 @@ export function listProjectMembers(projectId: string): ProjectMemberView[] {
     employee_no: string;
     is_pm: number;
     is_supervisor: number;
+    is_software_manager: number;
     joined_at: string;
   }[];
   const groups = db
@@ -202,6 +204,7 @@ export function listProjectMembers(projectId: string): ProjectMemberView[] {
     employeeNo: member.employee_no,
     isPm: member.is_pm === 1,
     isSupervisor: member.is_supervisor === 1,
+    isSoftwareManager: member.is_software_manager === 1,
     joinedAt: member.joined_at,
     groups: groups
       .filter((group) => group.user_id === member.id)
@@ -214,7 +217,7 @@ export function listProjectMembers(projectId: string): ProjectMemberView[] {
 export function addProjectMember(
   projectId: string,
   operatorId: string,
-  input: { employeeNo?: string; userId?: string; isPm?: boolean; isSupervisor?: boolean },
+  input: { employeeNo?: string; userId?: string; isPm?: boolean; isSupervisor?: boolean; isSoftwareManager?: boolean },
 ): { userId: string } {
   requireProjectManager(operatorId, projectId);
   const db = getDb();
@@ -229,8 +232,8 @@ export function addProjectMember(
   const exists = db.prepare("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?").get(projectId, user.id);
   if (exists) throw new AppError(409, "该用户已是项目成员");
   db.prepare(
-    "INSERT INTO project_members (project_id, user_id, is_pm, is_supervisor, joined_at) VALUES (?, ?, ?, ?, ?)",
-  ).run(projectId, user.id, input.isPm ? 1 : 0, input.isSupervisor ? 1 : 0, nowIso());
+    "INSERT INTO project_members (project_id, user_id, is_pm, is_supervisor, is_software_manager, joined_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(projectId, user.id, input.isPm ? 1 : 0, input.isSupervisor ? 1 : 0, input.isSoftwareManager ? 1 : 0, nowIso());
   return { userId: user.id };
 }
 
@@ -238,21 +241,22 @@ export function updateProjectMemberRoles(
   projectId: string,
   operatorId: string,
   targetUserId: string,
-  input: { isPm: boolean; isSupervisor: boolean },
+  input: { isPm: boolean; isSupervisor: boolean; isSoftwareManager?: boolean },
 ): void {
   requireProjectManager(operatorId, projectId);
   const db = getDb();
   const member = db
-    .prepare("SELECT is_pm, is_supervisor FROM project_members WHERE project_id = ? AND user_id = ?")
-    .get(projectId, targetUserId) as { is_pm: number; is_supervisor: number } | undefined;
+    .prepare("SELECT is_pm, is_supervisor, is_software_manager FROM project_members WHERE project_id = ? AND user_id = ?")
+    .get(projectId, targetUserId) as { is_pm: number; is_supervisor: number; is_software_manager: number } | undefined;
   if (!member) throw new AppError(404, "项目成员不存在");
   if (!input.isPm && member.is_pm === 1) {
     const pmCount = (db.prepare("SELECT COUNT(*) AS count FROM project_members WHERE project_id = ? AND is_pm = 1").get(projectId) as { count: number }).count;
     if (pmCount <= 1) throw new AppError(409, "项目至少需要保留一名 PM");
   }
-  db.prepare("UPDATE project_members SET is_pm = ?, is_supervisor = ? WHERE project_id = ? AND user_id = ?").run(
+  db.prepare("UPDATE project_members SET is_pm = ?, is_supervisor = ?, is_software_manager = ? WHERE project_id = ? AND user_id = ?").run(
     input.isPm ? 1 : 0,
     input.isSupervisor ? 1 : 0,
+    input.isSoftwareManager === undefined ? member.is_software_manager : input.isSoftwareManager ? 1 : 0,
     projectId,
     targetUserId,
   );
