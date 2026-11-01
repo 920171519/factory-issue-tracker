@@ -9,6 +9,15 @@ import {
   createGroup,
 } from "../lib/groups";
 import { createCategory, listTimeSlotViews, saveHost, setDefaultGroups, createCode } from "../lib/taxonomy";
+import {
+  concludeItem,
+  createBatch,
+  createPackage,
+  createRequest,
+  setItemBarcodes,
+  setTesterGroup,
+  updatePackage,
+} from "../lib/packages";
 import { addErrorIssue, createBarcode, getProjectStatuses, updateTrackingGroups } from "../lib/issues";
 import { updateIssueStatuses } from "../lib/status-actions";
 import { transferResponsibility } from "../lib/assignments";
@@ -67,21 +76,160 @@ function ensureProjectMember(projectId: string, pmId: string, userId: string): v
   if (!exists) addProjectMember(projectId, pmId, { userId });
 }
 
+function groupIdByName(projectId: string, name: string): string {
+  const row = getDb().prepare("SELECT id FROM groups WHERE project_id = ? AND name = ?").get(projectId, name) as
+    | { id: string }
+    | undefined;
+  if (!row) throw new Error(`缺少演示责任组：${name}`);
+  return row.id;
+}
+
+/** 软件包与转测/验证演示数据（幂等：已存在则不重复创建）。 */
+async function seedPackageDemo(
+  projectId: string,
+  ids: Record<string, string>,
+  groups: { cpu: string; fan: string; repair: string; retest: string },
+): Promise<void> {
+  const db = getDb();
+  setTesterGroup(projectId, ids.pm, groups.retest);
+
+  // 历史编码补责任组（编码清单已迁移为软件包管理）
+  const legacy = db.prepare("SELECT id, code FROM code_list WHERE project_id = ?").all(projectId) as { id: string; code: string }[];
+  for (const row of legacy) {
+    if (row.code === "XH-SYS-PCB-A01") updatePackage(projectId, row.id, ids.pm, { groupId: groups.cpu, ownerId: ids.cpuLeader });
+    if (row.code === "XH-FAN-4020") updatePackage(projectId, row.id, ids.pm, { groupId: groups.fan, ownerId: ids.fanLeader });
+    if (row.code === "XH-PSU-1600") updatePackage(projectId, row.id, ids.pm, { groupId: groups.repair, ownerId: ids.repairLeader });
+  }
+
+  function ensurePackage(code: string, description: string, version: string, groupId: string, ownerId: string): string {
+    const existing = db.prepare("SELECT id FROM code_list WHERE project_id = ? AND code = ?").get(projectId, code) as
+      | { id: string }
+      | undefined;
+    if (existing) {
+      updatePackage(projectId, existing.id, ids.pm, { groupId, ownerId });
+      return existing.id;
+    }
+    return createPackage(projectId, ids.pm, { code, description, version, groupId, ownerId }).id;
+  }
+
+  const bios = ensurePackage("XH-BIOS-FW", "服务器 BIOS 固件", "Rev.B2", groups.cpu, ids.cpuLeader);
+  const bmc = ensurePackage("XH-BMC-FW", "BMC 管理固件", "V1.4", groups.fan, ids.fanLeader);
+  const cpld = ensurePackage("XH-CPLD-LOGIC", "CPLD 逻辑固件", "V2.1", groups.retest, ids.retestLeader);
+
+  const board = ensurePackage("XH-SYS-PCB-A01", "整机主板组件编码", "Rev.B2", groups.cpu, ids.cpuLeader);
+
+  const batchCount = db
+    .prepare("SELECT COUNT(*) AS count FROM package_batches WHERE project_id = ? AND kind = 'TEST'")
+    .get(projectId) as { count: number };
+  if (batchCount.count > 0) return;
+
+  console.log("正在创建软件包转测/验证演示数据…");
+  const biosRequest = createRequest(projectId, ids.cpuLeader, {
+    kind: "TEST",
+    packageId: bios,
+    version: "Rev.C1",
+    changeSummary: "修复 CPU 满载降频策略，新增温度阈值日志与风扇联动。",
+    packageUrl: "\\\\share\\release\\XH-BIOS-FW\\Rev.C1",
+  });
+  const bmcRequest = createRequest(projectId, ids.fanLeader, {
+    kind: "TEST",
+    packageId: bmc,
+    version: "V1.5",
+    changeSummary: "修复风扇转速曲线在小负载下的周期性抖动。",
+    packageUrl: "\\\\share\\release\\XH-BMC-FW\\V1.5",
+  });
+  const boardRequest = createRequest(projectId, ids.cpuLeader, {
+    kind: "TEST",
+    packageId: board,
+    version: "Rev.B3",
+    changeSummary: "修正主板电源时序与 CPU 供电反馈环路。",
+    packageUrl: "\\\\share\\release\\XH-SYS-PCB-A01\\Rev.B3",
+  });
+
+  const testBatch = createBatch(projectId, ids.pm, {
+    kind: "TEST",
+    requestIds: [biosRequest.id, bmcRequest.id, boardRequest.id],
+    title: "11 月第一次转测",
+    scheduledDate: todayLocal(),
+    note: "常规月度转测，重点验证降频策略、风扇曲线与主板供电时序。",
+  });
+  const testItems = db
+    .prepare("SELECT id, package_id AS packageId FROM package_batch_items WHERE batch_id = ?")
+    .all(testBatch.batchId) as { id: string; packageId: string }[];
+  const biosTestItem = testItems.find((item) => item.packageId === bios);
+  const bmcTestItem = testItems.find((item) => item.packageId === bmc);
+  const boardTestItem = testItems.find((item) => item.packageId === board);
+  if (!biosTestItem || !bmcTestItem || !boardTestItem) throw new Error("演示批次条目缺失");
+
+  concludeItem(projectId, testBatch.batchId, biosTestItem.id, ids.retestLeader, {
+    conclusion: "PASS",
+    note: "满载 8 小时稳定，降频温度曲线符合预期，可提交转验证。",
+  });
+  concludeItem(projectId, testBatch.batchId, bmcTestItem.id, ids.retestLeader, {
+    conclusion: "CONDITIONAL",
+    note: "小负载转速仍有约 3% 抖动，需在 V1.6 复测后再提交转验证。",
+  });
+  concludeItem(projectId, testBatch.batchId, boardTestItem.id, ids.retestLeader, {
+    conclusion: "PASS",
+    note: "电源时序与供电反馈均正常，可转正式服务器验证。",
+  });
+
+  const verifyRequest = createRequest(projectId, ids.cpuLeader, {
+    kind: "VERIFY",
+    packageId: board,
+    version: "Rev.B3",
+    changeSummary: "主板 Rev.B3 转正式服务器验证。",
+    packageUrl: "\\\\share\\release\\XH-SYS-PCB-A01\\Rev.B3",
+    sourceItemId: boardTestItem.id,
+  });
+  const verifyBatch = createBatch(projectId, ids.pm, {
+    kind: "VERIFY",
+    requestIds: [verifyRequest.id],
+    title: "11 月第一次转验证",
+    scheduledDate: todayLocal(),
+    note: "正式服务器 A-01 验证主板 Rev.B3。",
+  });
+  const verifyItem = db
+    .prepare("SELECT id FROM package_batch_items WHERE batch_id = ? AND package_id = ?")
+    .get(verifyBatch.batchId, board) as { id: string } | undefined;
+  if (!verifyItem) throw new Error("演示验证条目缺失");
+  setItemBarcodes(projectId, verifyBatch.batchId, verifyItem.id, ids.retestLeader, ["XH-CPU-2601001", "XH-MIX-2601003"]);
+  concludeItem(projectId, verifyBatch.batchId, verifyItem.id, ids.retestLeader, {
+    conclusion: "PASS",
+    note: "正式服务器条码 XH-CPU-2601001 与 XH-MIX-2601003 连续运行 48 小时无异常，可转正。",
+  });
+
+  createRequest(projectId, ids.retestLeader, {
+    kind: "TEST",
+    packageId: cpld,
+    version: "Rev.A2",
+    changeSummary: "调整上电时序，缩短 PCIe 复位等待时间。",
+    packageUrl: "\\\\share\\release\\XH-CPLD-LOGIC\\Rev.A2",
+  });
+}
+
 async function main() {
   const db = getDb();
-  const existing = db.prepare("SELECT id, name FROM projects WHERE code = ?").get(DEMO_PROJECT_CODE) as
-    | { id: string; name: string }
-    | undefined;
-  if (existing) {
-    console.log("\n演示项目已存在，跳过种子数据创建。");
-    console.log(`项目：${existing.name}（${existing.id}）`);
-    console.log(`登录账号：a00000001（系统管理员）/ ${PASSWORD}`);
-    return;
-  }
 
   console.log("正在创建演示账号…");
   const ids: Record<string, string> = {};
   for (const person of PEOPLE) ids[person.key] = await ensureUser(person);
+
+  const existing = db.prepare("SELECT id, name FROM projects WHERE code = ?").get(DEMO_PROJECT_CODE) as
+    | { id: string; name: string }
+    | undefined;
+  if (existing) {
+    await seedPackageDemo(existing.id, ids, {
+      cpu: groupIdByName(existing.id, "CPU 测试组"),
+      fan: groupIdByName(existing.id, "风扇测试组"),
+      repair: groupIdByName(existing.id, "维修组"),
+      retest: groupIdByName(existing.id, "复测组"),
+    });
+    console.log("\n演示项目已存在，跳过基础种子数据创建（已补齐软件包演示数据）。");
+    console.log(`项目：${existing.name}（${existing.id}）`);
+    console.log(`登录账号：a00000001（系统管理员）/ ${PASSWORD}`);
+    return;
+  }
 
   console.log("正在创建项目与基础配置…");
   const { id: projectId } = createProject(ids.pm, {
@@ -172,6 +320,8 @@ async function main() {
   createCode(projectId, ids.pm, { code: "XH-SYS-PCB-A01", description: "整机主板组件编码", version: "Rev.B2", ownerId: ids.cpuLeader });
   createCode(projectId, ids.pm, { code: "XH-FAN-4020", description: "4020 规格系统风扇", version: "V1.4", ownerId: ids.fanLeader });
   createCode(projectId, ids.pm, { code: "XH-PSU-1600", description: "1600W 冗余电源模块", version: "Rev.A1", ownerId: ids.pm });
+
+  await seedPackageDemo(projectId, ids, { cpu: cpuGroup, fan: fanGroup, repair: repairGroup, retest: retestGroup });
 
   console.log("正在创建演示问题…");
   const statuses = getProjectStatuses(projectId);

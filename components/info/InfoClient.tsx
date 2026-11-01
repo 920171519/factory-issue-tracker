@@ -1,33 +1,32 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import {
-  Check,
-  CloudCog,
+  ArrowRight,
   Eye,
   EyeOff,
   KeyRound,
-  LoaderCircle,
   MapPin,
+  Package,
   Plus,
   Server,
   Trash2,
 } from "lucide-react";
-import type { CodeView, HostView } from "@/lib/taxonomy";
+import type { HostView } from "@/lib/taxonomy";
 import { apiFetch, errorMessage } from "@/lib/client-api";
 import { useToast } from "@/components/Toast";
 import { formatDateTime } from "@/lib/time";
 
 interface InfoClientProps {
   projectId: string;
-  codes: CodeView[];
   hosts: HostView[];
-  memberOptions: { id: string; name: string; employeeNo: string }[];
+  packageCount: number;
   isPm: boolean;
 }
 
-export function InfoClient({ projectId, codes, hosts, memberOptions, isPm }: InfoClientProps) {
+export function InfoClient({ projectId, hosts, packageCount, isPm }: InfoClientProps) {
   const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
@@ -54,35 +53,23 @@ export function InfoClient({ projectId, codes, hosts, memberOptions, isPm }: Inf
         <div>
           <div className="page-kicker">Project Foundations</div>
           <h1 className="page-title">基础信息</h1>
-          <p className="page-sub">维护编码清单与库位云主机映射。录入问题时按库位号自动带出云主机信息，设备当前条码可先由接口桩读取。</p>
+          <p className="page-sub">维护库位云主机映射。软件包编码清单与转测试/验证/转正流程已迁移到「软件包管理」页面统一维护。</p>
         </div>
         {!isPm ? <div className="header-actions"><span className="badge badge-blue">项目成员 · 只读</span></div> : null}
       </div>
 
       <div className="grid grid-2">
         <div className="card metric-card"><div className="metric-label"><Server size={15} /> 已维护库位</div><div className="metric-value">{hosts.length}</div><div className="metric-note">库位号到云主机 IP、账号、密码的映射</div></div>
-        <div className="card metric-card"><div className="metric-label"><CloudCog size={15} /> 编码条目</div><div className="metric-value">{codes.length}</div><div className="metric-note">编码、描述、版本与责任人清单</div></div>
+        <div className="card metric-card">
+          <div className="metric-label"><Package size={15} /> 软件包</div>
+          <div className="metric-value">{packageCount}</div>
+          <div className="metric-note">
+            <Link className="link" href={`/projects/${projectId}/packages`}>打开软件包管理 <ArrowRight size={11} /></Link>
+          </div>
+        </div>
       </div>
 
       {error ? <div className="alert alert-error">{error}</div> : null}
-
-      <div className="card">
-        <div className="card-header">
-          <div><h2 className="section-title">编码清单</h2><div className="section-sub">按编码维护描述、版本和责任人。责任人可留空。</div></div>
-          <span className="badge badge-outline">{codes.length} 条</span>
-        </div>
-        <div className="table-wrap">
-          <table className="table config-table">
-            <thead><tr><th>编码</th><th>描述</th><th>版本</th><th>责任人</th><th>更新时间</th>{isPm ? <th></th> : null}</tr></thead>
-            <tbody>
-              {codes.length === 0 ? <tr><td colSpan={isPm ? 6 : 5}><div className="table-empty">暂无编码清单。{isPm ? "在下方新增编码。" : ""}</div></td></tr> : codes.map((code) => (
-                <CodeRow key={`${code.id}-${code.code}-${code.description}-${code.version}-${code.ownerId}`} projectId={projectId} code={code} memberOptions={memberOptions} isPm={isPm} busy={busy} run={run} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {isPm ? <AddCodeForm projectId={projectId} memberOptions={memberOptions} busy={busy} run={run} /> : null}
-      </div>
 
       <div className="card">
         <div className="card-header">
@@ -129,84 +116,15 @@ export function InfoClient({ projectId, codes, hosts, memberOptions, isPm }: Inf
       </div>
 
       <div className="callout-strip">
+        <Package size={14} /> 软件包编码、责任组归属、正式/验证/测试版本以及转测试与转验证批次，统一在
+        <Link className="link" href={`/projects/${projectId}/packages`} style={{ marginLeft: 4 }}>软件包管理</Link>
+        维护。
+      </div>
+
+      <div className="callout-strip">
         <KeyRound size={14} /> 设备测试接口当前为桩实现。录入弹窗中可点击「从设备接口读取」，自动获得模拟条码和设备 IP；接入真实 MES 时替换对应接口即可。
       </div>
     </div>
-  );
-}
-
-function CodeRow({ projectId, code, memberOptions, isPm, busy, run }: {
-  projectId: string; code: CodeView; memberOptions: { id: string; name: string; employeeNo: string }[]; isPm: boolean; busy: string | null;
-  run: (key: string, task: () => Promise<void>) => Promise<void>;
-}) {
-  const toast = useToast();
-  const [value, setValue] = useState(code.code);
-  const [description, setDescription] = useState(code.description || "");
-  const [version, setVersion] = useState(code.version || "");
-  const [ownerId, setOwnerId] = useState(code.ownerId || "");
-  return (
-    <tr>
-      <td><input className="input mono" value={value} onChange={(event) => setValue(event.target.value)} disabled={!isPm} /></td>
-      <td><input className="input" value={description} onChange={(event) => setDescription(event.target.value)} disabled={!isPm} /></td>
-      <td><input className="input" value={version} onChange={(event) => setVersion(event.target.value)} disabled={!isPm} style={{ minWidth: 80 }} /></td>
-      <td>
-        {isPm ? (
-          <select className="select code-owner" value={ownerId} onChange={(event) => setOwnerId(event.target.value)}>
-            <option value="">未指定</option>
-            {memberOptions.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-          </select>
-        ) : (code.ownerName || "—")}
-      </td>
-      <td className="mini-meta">{formatDateTime(code.updatedAt)}</td>
-      {isPm ? (
-        <td className="actions"><div className="row" style={{ justifyContent: "flex-end", gap: 4 }}>
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy !== null} onClick={() => void run(`save-code-${code.id}`, async () => {
-            await apiFetch(`/api/projects/${projectId}/codes/${code.id}`, { method: "PATCH", body: JSON.stringify({ code: value, description, version, ownerId: ownerId || null }) });
-            toast.success("编码已保存");
-          })}><Check size={12} /> 保存</button>
-          <button type="button" className="icon-btn danger" disabled={busy !== null} onClick={async () => {
-            if (!window.confirm(`确定删除编码「${code.code}」吗？`)) return;
-            await run(`delete-code-${code.id}`, async () => {
-              await apiFetch(`/api/projects/${projectId}/codes/${code.id}`, { method: "DELETE" });
-              toast.success("编码已删除");
-            });
-          }}><Trash2 size={13} /></button>
-        </div></td>
-      ) : null}
-    </tr>
-  );
-}
-
-function AddCodeForm({ projectId, memberOptions, busy, run }: {
-  projectId: string; memberOptions: { id: string; name: string; employeeNo: string }[]; busy: string | null;
-  run: (key: string, task: () => Promise<void>) => Promise<void>;
-}) {
-  const toast = useToast();
-  const [code, setCode] = useState("");
-  const [description, setDescription] = useState("");
-  const [version, setVersion] = useState("");
-  const [ownerId, setOwnerId] = useState("");
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    await run("add-code", async () => {
-      await apiFetch(`/api/projects/${projectId}/codes`, { method: "POST", body: JSON.stringify({ code, description, version, ownerId: ownerId || null }) });
-      setCode("");
-      setDescription("");
-      setVersion("");
-      toast.success("编码已添加");
-    });
-  }
-  return (
-    <form onSubmit={submit} className="card-body" style={{ borderTop: "1px solid var(--border)" }}>
-      <div className="panel-title">新增编码</div>
-      <div className="inline-form">
-        <div className="field" style={{ maxWidth: 170 }}><label>编码</label><input className="input mono" value={code} onChange={(event) => setCode(event.target.value)} required maxLength={80} /></div>
-        <div className="field"><label>描述</label><input className="input" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={300} /></div>
-        <div className="field" style={{ maxWidth: 110 }}><label>版本</label><input className="input" value={version} onChange={(event) => setVersion(event.target.value)} maxLength={50} /></div>
-        <div className="field" style={{ maxWidth: 150 }}><label>责任人</label><select className="select" value={ownerId} onChange={(event) => setOwnerId(event.target.value)}><option value="">未指定</option>{memberOptions.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}</select></div>
-        <button className="btn btn-primary" type="submit" disabled={busy !== null}><Plus size={14} /> 新增</button>
-      </div>
-    </form>
   );
 }
 

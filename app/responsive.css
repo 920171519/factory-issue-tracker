@@ -368,3 +368,18 @@
   .toolbar-target-hint { display: none; }
   .issue-detail-card .detail-content { padding: 14px; }
 }
+
+/* ---------- 软件包与版本流转 ---------- */
+@media (max-width: 1360px) {
+  .packages-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1180px) {
+  .batch-stats { display: none; }
+}
+@media (max-width: 840px) {
+  .packages-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .packages-filter-bar { padding: 0 12px 12px; }
+  .batch-list { padding: 10px; }
+  .wrap-cell { max-width: 200px; }
+  .batch-head { gap: 7px; }
+}

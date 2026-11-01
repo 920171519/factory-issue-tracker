@@ -49,11 +49,12 @@ page.on("request", (request) => {
 });
 
 try {
-  await page.goto(`${BASE}/login`, { waitUntil: "networkidle" });
-  await page.locator("#employeeNo").fill("c00000003");
-  await page.locator("#password").fill("Demo1234");
-  await page.getByRole("button", { name: /进入工作台/ }).click();
-  await page.waitForURL("**/projects");
+  // 用 API 登录（与浏览器上下文共享 Cookie），避免登录页受浏览器扩展注入影响。
+  const loginResponse = await context.request.post(`${BASE}/api/auth/login`, {
+    data: { employeeNo: "c00000003", password: "Demo1234" },
+  });
+  assert.equal(loginResponse.status(), 200, "API 登录应成功");
+  await page.goto(`${BASE}/projects`, { waitUntil: "networkidle" });
   await page.waitForLoadState("networkidle");
   await page.getByText("星河服务器 NPI 验证项目", { exact: true }).first().click();
   await page.waitForURL(/\/projects\/[^/]+$/);

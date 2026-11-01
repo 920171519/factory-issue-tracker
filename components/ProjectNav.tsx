@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   ListChecks,
+  Package,
   UsersRound,
   Network,
   ChartNoAxesColumnIncreasing,
@@ -44,6 +45,7 @@ export function ProjectNav({ projectId, projectName, projectCode, isPm, isSuperv
   const items = [
     { href: base, label: "项目概览", icon: LayoutDashboard, exact: true },
     { href: `${base}/issues`, label: "问题跟踪", icon: ListChecks },
+    { href: `${base}/packages`, label: "软件包管理", icon: Package },
     { href: `${base}/communication`, label: "沟通地图", icon: Network },
     { href: `${base}/statistics`, label: "高频报错", icon: ChartNoAxesColumnIncreasing },
     ...(isPm || isSupervisor ? [{ href: `${base}/approvals`, label: "删除审批", icon: ShieldCheck, count: pendingApprovals }] : []),

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
   code TEXT,
   description TEXT,
   notify_self_on_status INTEGER NOT NULL DEFAULT 1,
+  tester_group_id TEXT,
   created_by TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -158,6 +159,9 @@ CREATE TABLE IF NOT EXISTS code_list (
   description TEXT,
   version TEXT,
   owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
+  test_version TEXT,
+  verification_version TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE (project_id, code)
 );
@@ -281,6 +285,76 @@ CREATE TABLE IF NOT EXISTS anomalies (
   resolved INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS package_requests (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  package_id TEXT NOT NULL REFERENCES code_list(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  version TEXT NOT NULL,
+  change_summary TEXT NOT NULL DEFAULT '',
+  package_url TEXT,
+  source_item_id TEXT,
+  submitted_by TEXT NOT NULL REFERENCES users(id),
+  submitted_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  batch_item_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS package_batches (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  code TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  scheduled_date TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (project_id, kind, seq)
+);
+
+CREATE TABLE IF NOT EXISTS package_batch_items (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES package_batches(id) ON DELETE CASCADE,
+  package_id TEXT NOT NULL REFERENCES code_list(id) ON DELETE CASCADE,
+  package_code TEXT NOT NULL,
+  package_name TEXT,
+  group_id TEXT,
+  group_name TEXT,
+  owner_name TEXT,
+  official_version TEXT,
+  version TEXT,
+  updated_vs_official INTEGER NOT NULL DEFAULT 0,
+  updated_vs_previous INTEGER NOT NULL DEFAULT 0,
+  previous_version TEXT,
+  request_id TEXT,
+  change_summary TEXT NOT NULL DEFAULT '',
+  package_url TEXT,
+  submitted_by TEXT,
+  submitted_by_name TEXT,
+  conclusion TEXT NOT NULL DEFAULT 'PENDING',
+  conclusion_note TEXT NOT NULL DEFAULT '',
+  concluded_by TEXT,
+  concluded_by_name TEXT,
+  concluded_at TEXT,
+  barcodes TEXT NOT NULL DEFAULT '[]',
+  promoted INTEGER NOT NULL DEFAULT 0,
+  promoted_at TEXT,
+  promoted_by TEXT,
+  promoted_by_name TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (batch_id, package_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_package_requests_lookup
+  ON package_requests(project_id, kind, status, submitted_at DESC);
+CREATE INDEX IF NOT EXISTS ix_package_batches_lookup
+  ON package_batches(project_id, kind, seq DESC);
+CREATE INDEX IF NOT EXISTS ix_package_batch_items_package
+  ON package_batch_items(package_id, created_at);
+
 CREATE INDEX IF NOT EXISTS ix_barcodes_project_updated ON barcodes(project_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS ix_issues_barcode ON issues(barcode_id);
 CREATE INDEX IF NOT EXISTS ix_issues_project_status ON issues(project_id, status_id);
@@ -294,6 +368,14 @@ CREATE INDEX IF NOT EXISTS ix_schedules_group ON schedules(group_id, weekday, sl
 
 let dbInstance: AppDatabase | null = null;
 let currentPath: string | null = null;
+
+/** Additive migration helper: only appends a column when the table lacks it. */
+function ensureColumn(db: AppDatabase, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name?: unknown }[];
+  if (!columns.some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
 
 export function databasePath(): string {
   return process.env.DATABASE_PATH || "./data/app.db";
@@ -309,10 +391,12 @@ export function createDatabase(filePath = databasePath()): AppDatabase {
   db.pragma("busy_timeout = 5000");
   if (!memory) db.pragma("journal_mode = WAL");
   db.exec(SCHEMA);
-  const userColumns = db.prepare("PRAGMA table_info(users)").all() as { name?: unknown }[];
-  if (!userColumns.some((column) => column.name === "is_system_admin")) {
-    db.exec("ALTER TABLE users ADD COLUMN is_system_admin INTEGER NOT NULL DEFAULT 0");
-  }
+  ensureColumn(db, "users", "is_system_admin", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "projects", "tester_group_id", "TEXT");
+  ensureColumn(db, "code_list", "group_id", "TEXT");
+  ensureColumn(db, "code_list", "test_version", "TEXT");
+  ensureColumn(db, "code_list", "verification_version", "TEXT");
+  ensureColumn(db, "package_batch_items", "promoted_by_name", "TEXT");
   return db;
 }
 

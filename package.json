@@ -13,9 +13,11 @@
     "seed": "tsx scripts/seed.ts",
     "test:e2e": "tsx scripts/e2e.ts",
     "test:api": "node scripts/e2e-api.mjs",
+    "test:api:packages": "node scripts/e2e-packages.mjs",
     "test:ui": "node scripts/ui-smoke.mjs && node scripts/ui-flows.mjs",
     "test:ui:flows": "node scripts/ui-flows.mjs",
     "test:ui:tabs": "node scripts/ui-issues-tabs.mjs",
+    "test:ui:packages": "node scripts/ui-packages.mjs",
     "backup": "node scripts/backup.mjs",
     "verify": "pnpm typecheck && pnpm test && pnpm build",
     "admin:grant": "tsx scripts/set-admin.ts"
