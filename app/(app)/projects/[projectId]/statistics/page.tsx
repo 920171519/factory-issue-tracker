@@ -104,7 +104,7 @@ export default async function StatisticsPage({
           <div className="field">
             <label htmlFor="categoryId">问题归属节点</label>
             <select id="categoryId" className="select" name="categoryId" defaultValue={categoryId}>
-              <option value="">全部分类</option>
+              <option value="">全部节点</option>
               {stats.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select>
           </div>
@@ -190,7 +190,7 @@ export default async function StatisticsPage({
         </div>
         <div className="table-wrap">
           <table className="table freq-table">
-            <thead><tr><th>#</th><th>报错项</th><th>出现次数</th><th>涉及条码</th><th>责任组</th><th>分类</th><th>最近出现</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>报错项</th><th>出现次数</th><th>涉及条码</th><th>责任组</th><th>节点</th><th>最近出现</th><th></th></tr></thead>
             <tbody>
               {stats.items.length === 0 ? (
                 <tr><td colSpan={8}><div className="table-empty">{activeFilters ? "没有符合筛选条件的报错项。" : "所选时间段暂无报错项记录。请先在问题详情中填写报错测试项。"}</div></td></tr>

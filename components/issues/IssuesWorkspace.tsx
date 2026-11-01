@@ -449,7 +449,7 @@ export function IssuesWorkspace({
                       <th>参与责任组 / 当前处理人</th>
                       <th>状态</th>
                       <th>优先级</th>
-                      <th>分类</th>
+                      <th>节点</th>
                       <th>更新时间</th>
                       <th></th>
                     </tr>
