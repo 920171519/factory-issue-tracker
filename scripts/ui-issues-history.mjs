@@ -63,12 +63,19 @@ try {
   assert.equal(await openOnly.isChecked(), true, "默认应勾选仅未闭环");
   pass("默认按今天 + 仅未闭环展示");
 
+  // 演示数据可能不是当天录入：先显示全部历史，再检查列表与详情。
+  const allRowsResponse = page.waitForResponse((response) => response.url().includes("/api/projects/") && response.url().includes("/issues?") && response.status() === 200);
+  await page.getByRole("button", { name: "显示全部历史" }).click();
+  await allRowsResponse;
+  await page.waitForSelector(".issue-table tbody .barcode-link", { timeout: 60000 });
+  await page.waitForTimeout(400);
+
   // 2. 列表列与录入次数
   const headers = await page.locator(".issue-table thead th").allTextContents();
   assert.ok(headers.includes("录入时间"), "列表应包含录入时间列");
   const rows = page.locator(".issue-table tbody tr");
   const rowCount = await rows.count();
-  assert.ok(rowCount >= 4, `默认应展示当天条码，实际 ${rowCount}`);
+  assert.ok(rowCount >= 4, `显示全部历史后应展示全部演示条码，实际 ${rowCount}`);
   const cpuRow = rows.filter({ hasText: "XH-CPU-2601001" });
   const cpuEntryMatch = (await cpuRow.textContent()).match(/(\d+) 次录入/);
   assert.ok(cpuEntryMatch && Number(cpuEntryMatch[1]) >= 2, "重复录入的条码应显示多次录入");
@@ -93,10 +100,10 @@ try {
   await page.locator(".issue-main-tabs [role=tab]").first().click();
   await page.waitForTimeout(300);
 
-  // 4. 查询无数据日期 → 空结果
+  // 4. 查询无数据的历史日期 → 空结果（与演示数据实际日期无关）
+  await fromInput.fill("2020-01-01");
   const emptyResponse = page.waitForResponse((response) => response.url().includes("/api/projects/") && response.url().includes("/issues?") && response.status() === 200);
-  await fromInput.fill(localDate(-1));
-  await toInput.fill(localDate(-1));
+  await toInput.fill("2020-01-02");
   await emptyResponse;
   await page.waitForTimeout(600);
   const emptyState = await page.locator(".issue-list-panel .empty-state").textContent();

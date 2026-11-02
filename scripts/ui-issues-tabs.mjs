@@ -63,6 +63,15 @@ try {
 
   await page.goto(`${BASE}/projects/${projectId}/issues`, { waitUntil: "networkidle" });
   await page.waitForTimeout(600);
+  // 演示数据未必是当天录入：先切换「显示全部历史」，避免默认「今天 + 未闭环」过滤掉全部条码。
+  const showAllButton = page.getByRole("button", { name: "显示全部历史" });
+  if (await showAllButton.count()) {
+    const allResponse = page.waitForResponse((response) => response.url().includes("/issues?") && response.status() === 200);
+    await showAllButton.click();
+    await allResponse;
+    await page.waitForTimeout(500);
+  }
+  await page.waitForSelector(".issue-list-panel .barcode-link", { timeout: 60000 });
 
   // 1. 布局顺序：工具区 → 标签栏 → 列表表格
   const toolbarBox = await page.locator(".issues-toolbar-card").boundingBox();

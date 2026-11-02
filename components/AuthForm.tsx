@@ -23,8 +23,12 @@ export function AuthForm({ mode }: AuthFormProps) {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError("");
-    if (!isLogin && !/^[a-z]\d{8}$/.test(employeeNo.trim())) {
-      setError("工号格式必须为 1 个小写字母 + 8 个数字，例如 a00000001");
+    if (!isLogin && !employeeNo.trim()) {
+      setError("请输入工号");
+      return;
+    }
+    if (!isLogin && /\s/.test(employeeNo.trim())) {
+      setError("工号不能包含空格");
       return;
     }
     setPending(true);
@@ -67,12 +71,12 @@ export function AuthForm({ mode }: AuthFormProps) {
             className="input"
             value={employeeNo}
             onChange={(event) => setEmployeeNo(event.target.value)}
-            placeholder={isLogin ? "请输入工号" : "例如 a00000001"}
+            placeholder={isLogin ? "请输入工号" : "请输入工号，例如 A001、c00000003"}
             autoComplete="username"
             required
-            maxLength={9}
+            maxLength={40}
           />
-          {!isLogin ? <div className="field-hint">工号为 1 个小写字母加 8 个数字。</div> : null}
+          {!isLogin ? <div className="field-hint">请填写你所在单位/岗位的工号，支持字母、数字、-、_ 等字符（最多 40 个字符，不能包含空格）；注册后用于登录。</div> : null}
         </div>
         <div className="field">
           <label htmlFor="password">密码</label>

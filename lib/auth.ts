@@ -84,7 +84,9 @@ export async function registerAccount(input: { name: string; employeeNo: string;
   const employeeNo = input.employeeNo.trim();
   const password = input.password;
   if (name.length < 2 || name.length > 30) throw new AppError(400, "姓名长度应为 2–30 个字符");
-  if (!/^[a-z]\d{8}$/.test(employeeNo)) throw new AppError(400, "工号格式必须为 1 个小写字母 + 8 个数字，例如 a00000001");
+  if (!employeeNo) throw new AppError(400, "请输入工号");
+  if (employeeNo.length > 40) throw new AppError(400, "工号不能超过 40 个字符");
+  if (/\s/.test(employeeNo)) throw new AppError(400, "工号不能包含空格");
   if (password.length < 6 || password.length > 72) throw new AppError(400, "密码长度应为 6–72 位");
   if (getUserByEmployeeNo(employeeNo)) throw new AppError(409, "该工号已注册");
 
